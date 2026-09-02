@@ -89,6 +89,7 @@ class NeuralCipherDecoder(nn.Module):
                 row_mask=pooled.mask,
                 iterations=self.config.sinkhorn_iterations,
                 temperature=self.config.sinkhorn_temperature,
+                dummy_mode=self.config.sinkhorn_dummy_mode,
             )
             if self.uses_sinkhorn
             else raw_zone_scores

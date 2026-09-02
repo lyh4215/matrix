@@ -23,6 +23,7 @@ class ControlledSyntheticConfig:
     plaintext_symbols_per_zone: int = 64
     region_width: int = 128
     locality_noise: float = 0.1
+    allow_cipher_collisions: bool = False
     noise_levels: tuple[float, ...] = (0.0, 0.1, 0.25, 0.5)
     region_gap_min: int = 32
     region_gap_max: int = 96
@@ -68,6 +69,12 @@ class ControlledSyntheticConfig:
             raise ValueError("IID numeric range cannot fit all local regions")
         if self.ood_value_max - self.ood_value_min < maximum_span:
             raise ValueError("OOD numeric range cannot fit all local regions")
+        mapping_size = self.num_zones * self.plaintext_symbols_per_zone
+        if not self.allow_cipher_collisions and (
+            self.iid_value_max - self.iid_value_min < mapping_size
+            or self.ood_value_max - self.ood_value_min < mapping_size
+        ):
+            raise ValueError("numeric ranges cannot fit a collision-free symbol mapping")
         if not 1 <= self.preferred_transitions <= self.num_zones:
             raise ValueError("preferred_transitions must be in [1, num_zones]")
         if self.transition_strength <= 1.0:
@@ -140,32 +147,106 @@ class ControlledCipherTable:
     zone_to_region: tuple[int, ...]
     region_width: int
     symbols_per_zone: int
+    symbol_to_cipher: tuple[tuple[int, ...], ...]
+    locality_noise: float
+    allow_cipher_collisions: bool = False
+
+    @classmethod
+    def create(
+        cls,
+        table_id: str,
+        region_bases: Sequence[int],
+        zone_to_region: Sequence[int],
+        region_width: int,
+        symbols_per_zone: int,
+        locality_noise: float,
+        rng: random.Random,
+        allow_cipher_collisions: bool = False,
+    ) -> "ControlledCipherTable":
+        if not 0.0 <= locality_noise <= 1.0:
+            raise ValueError("locality_noise must be between zero and one")
+        bases = tuple(region_bases)
+        permutation = tuple(zone_to_region)
+        if not bases or tuple(sorted(bases)) != bases:
+            raise ValueError("region bases must be non-empty and sorted")
+        if sorted(permutation) != list(range(len(bases))):
+            raise ValueError("zone_to_region must be a permutation of region indices")
+        if symbols_per_zone < 2 or region_width < 2:
+            raise ValueError("region width and symbols per zone must be at least two")
+        numeric_min = bases[0]
+        numeric_max = bases[-1] + region_width - 1
+        used: set[int] = set()
+        mappings: list[tuple[int, ...]] = []
+        for zone, region in enumerate(permutation):
+            zone_mapping: list[int] = []
+            for symbol in range(symbols_per_zone):
+                coordinate = round(symbol * (region_width - 1) / (symbols_per_zone - 1))
+                ideal_value = bases[region] + coordinate
+                target = round(ideal_value + rng.gauss(0.0, locality_noise * region_width))
+                target = min(max(target, numeric_min), numeric_max)
+                value = (
+                    target
+                    if allow_cipher_collisions
+                    else _nearest_unused(target, used, numeric_min, numeric_max)
+                )
+                used.add(value)
+                zone_mapping.append(value)
+            mappings.append(tuple(zone_mapping))
+        return cls(
+            table_id,
+            bases,
+            permutation,
+            region_width,
+            symbols_per_zone,
+            tuple(mappings),
+            locality_noise,
+            allow_cipher_collisions,
+        )
 
     def encrypt(
         self,
         sequence: PlainZoneSequence,
-        locality_noise: float,
-        rng: random.Random,
     ) -> CipherEpisode:
-        if not 0.0 <= locality_noise <= 1.0:
-            raise ValueError("locality_noise must be between zero and one")
         values: list[int] = []
         region_ids: list[int] = []
-        numeric_min = self.region_bases[0]
-        numeric_max = self.region_bases[-1] + self.region_width - 1
         for zone, symbol in zip(sequence.zones, sequence.symbol_ids):
             region = self.zone_to_region[zone]
-            ideal = round(symbol * (self.region_width - 1) / (self.symbols_per_zone - 1))
-            ideal_value = self.region_bases[region] + ideal
-            # Noise is measured in region widths. At stronger settings some
-            # observations cross a region boundary, making locality genuinely
-            # less reliable instead of merely scrambling order inside a cluster.
-            noisy_value = round(ideal_value + rng.gauss(0.0, locality_noise * self.region_width))
-            values.append(min(max(noisy_value, numeric_min), numeric_max))
+            values.append(self.symbol_to_cipher[zone][symbol])
             region_ids.append(region)
         return CipherEpisode(
             tuple(values), sequence.zones, tuple(region_ids), self.table_id
         )
+
+    def with_locality_noise(
+        self,
+        locality_noise: float,
+        rng: random.Random,
+        allow_cipher_collisions: bool | None = None,
+    ) -> "ControlledCipherTable":
+        return self.create(
+            self.table_id,
+            self.region_bases,
+            self.zone_to_region,
+            self.region_width,
+            self.symbols_per_zone,
+            locality_noise,
+            rng,
+            self.allow_cipher_collisions if allow_cipher_collisions is None else allow_cipher_collisions,
+        )
+
+
+def _nearest_unused(target: int, used: set[int], lower: int, upper: int) -> int:
+    if target not in used:
+        return target
+    maximum_radius = max(target - lower, upper - target)
+    for radius in range(1, maximum_radius + 1):
+        left = target - radius
+        right = target + radius
+        if left >= lower and left not in used:
+            return left
+        if right <= upper and right not in used:
+            return right
+    raise ValueError("numeric range is too small for a collision-free cipher mapping")
 
 
 @dataclass(frozen=True)
@@ -206,12 +287,15 @@ def _make_table(
         bases.append(bases[-1] + config.region_width + gap)
     permutation = list(range(config.num_zones))
     rng.shuffle(permutation)
-    return ControlledCipherTable(
+    return ControlledCipherTable.create(
         table_id,
-        tuple(bases),
-        tuple(permutation),
+        bases,
+        permutation,
         config.region_width,
         config.plaintext_symbols_per_zone,
+        config.locality_noise,
+        rng,
+        config.allow_cipher_collisions,
     )
 
 
@@ -244,10 +328,25 @@ def _plan_episodes(
 
 
 def _encrypt_plans(
-    plans: Iterable[PlannedEpisode], locality_noise: float, seed: int
+    plans: Iterable[PlannedEpisode], table_overrides: dict[str, ControlledCipherTable] | None = None
 ) -> list[CipherEpisode]:
+    table_overrides = table_overrides or {}
+    return [
+        table_overrides.get(plan.table.table_id, plan.table).encrypt(plan.plaintext)
+        for plan in plans
+    ]
+
+
+def _remap_tables(
+    tables: Sequence[ControlledCipherTable],
+    locality_noise: float,
+    seed: int,
+) -> dict[str, ControlledCipherTable]:
     rng = random.Random(seed)
-    return [plan.table.encrypt(plan.plaintext, locality_noise, rng) for plan in plans]
+    return {
+        table.table_id: table.with_locality_noise(locality_noise, rng)
+        for table in tables
+    }
 
 
 def generate_controlled_benchmark(
@@ -271,14 +370,19 @@ def generate_controlled_benchmark(
     validation_plans = _plan_episodes(validation_tables, language, config, seed + 1002)
     iid_plans = _plan_episodes(iid_tables, language, config, seed + 1003)
     ood_plans = _plan_episodes(ood_tables, language, config, seed + 1004)
-    train = _encrypt_plans(train_plans, config.locality_noise, seed + 2001)
-    validation = _encrypt_plans(validation_plans, config.locality_noise, seed + 2002)
-    iid_test = _encrypt_plans(iid_plans, config.locality_noise, seed + 2003)
-    ood_test = _encrypt_plans(ood_plans, config.locality_noise, seed + 2004)
+    train = _encrypt_plans(train_plans)
+    validation = _encrypt_plans(validation_plans)
+    ood_test = _encrypt_plans(ood_plans)
     iid_by_noise = {
-        level: _encrypt_plans(iid_plans, level, seed + 3000 + index)
-        for index, level in enumerate(config.noise_levels)
+        level: _encrypt_plans(
+            iid_plans,
+            # Reusing the RNG seed pairs the per-symbol Gaussian draw across
+            # levels; only its scale changes, so noise comparisons are controlled.
+            _remap_tables(iid_tables, level, seed + 3000),
+        )
+        for level in config.noise_levels
     }
+    iid_test = iid_by_noise.get(config.locality_noise, _encrypt_plans(iid_plans))
     iid_by_length = {
         length: [episode for episode in iid_test if len(episode.cipher_values) == length]
         for length in config.sequence_lengths

@@ -37,7 +37,7 @@ class RelationalAttention(nn.Module):
 
         digit_dim = 2 * config.num_digits if config.use_digit_delta else 0
         cipher_dim = 4 if config.use_cipher_delta else 0
-        sequence_dim = 4
+        sequence_dim = 4 if config.use_relative_sequence_position else 0
         pair_dim = 4 * self.head_dim + digit_dim + cipher_dim + sequence_dim
         relative_dim = digit_dim + cipher_dim + sequence_dim
         hidden_dim = max(16, self.head_dim * 2)
@@ -46,7 +46,7 @@ class RelationalAttention(nn.Module):
         )
         self.gate_mlps = (
             nn.ModuleList(_mlp(relative_dim, hidden_dim) for _ in range(config.num_heads))
-            if config.use_locality_gate
+            if config.use_locality_gate and relative_dim > 0
             else None
         )
         self.head_roles = tuple(self._role(head) for head in range(config.num_heads))
@@ -101,11 +101,13 @@ class RelationalAttention(nn.Module):
                 cipher_delta, self.config.distance_clip, self.config.use_log_distance
             )
 
-        positions = torch.arange(length, device=hidden.device, dtype=hidden.dtype)
-        sequence_delta = positions.unsqueeze(1) - positions.unsqueeze(0)
-        sequence_features = self._scalar_encoding(
-            sequence_delta, float(max(length - 1, 1)), self.config.use_log_distance
-        ).unsqueeze(0).expand(batch, -1, -1, -1)
+        sequence_features: Tensor | None = None
+        if self.config.use_relative_sequence_position:
+            positions = torch.arange(length, device=hidden.device, dtype=hidden.dtype)
+            sequence_delta = positions.unsqueeze(1) - positions.unsqueeze(0)
+            sequence_features = self._scalar_encoding(
+                sequence_delta, float(max(length - 1, 1)), self.config.use_log_distance
+            ).unsqueeze(0).expand(batch, -1, -1, -1)
 
         head_scores: list[Tensor] = []
         for head, role in enumerate(self.head_roles):
@@ -114,11 +116,18 @@ class RelationalAttention(nn.Module):
                 role_parts.append(torch.zeros_like(digit_features) if role == "sequence" else digit_features)
             if cipher_features is not None:
                 role_parts.append(torch.zeros_like(cipher_features) if role == "sequence" else cipher_features)
-            role_parts.append(torch.zeros_like(sequence_features) if role == "cipher_local" else sequence_features)
-            relative = torch.cat(role_parts, dim=-1)
-            pair = torch.cat((hidden_relation[:, head], relative), dim=-1)
+            if sequence_features is not None:
+                role_parts.append(
+                    torch.zeros_like(sequence_features) if role == "cipher_local" else sequence_features
+                )
+            relative = torch.cat(role_parts, dim=-1) if role_parts else None
+            pair = (
+                torch.cat((hidden_relation[:, head], relative), dim=-1)
+                if relative is not None
+                else hidden_relation[:, head]
+            )
             score = self.score_mlps[head](pair).squeeze(-1)
-            if self.gate_mlps is not None and role != "sequence":
+            if self.gate_mlps is not None and role != "sequence" and relative is not None:
                 score = score + F.logsigmoid(self.gate_mlps[head](relative).squeeze(-1))
             if role == "cipher_local" and self.config.hard_local_radius is not None:
                 too_far = cipher_delta.abs() > self.config.hard_local_radius

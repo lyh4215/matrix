@@ -21,7 +21,22 @@ ABLATIONS = (
     AblationVariant("no_absolute_digits", model_changes=(("use_absolute_digits", False),)),
     AblationVariant("no_cipher_delta", model_changes=(("use_cipher_delta", False),)),
     AblationVariant("no_digit_delta", model_changes=(("use_digit_delta", False),)),
-    AblationVariant("no_sequence_position", model_changes=(("use_sequence_position", False),)),
+    AblationVariant(
+        "no_sequence_position",
+        model_changes=(
+            ("use_sequence_position", None),
+            ("use_absolute_sequence_position", False),
+            ("use_relative_sequence_position", False),
+        ),
+    ),
+    AblationVariant(
+        "no_absolute_sequence_position",
+        model_changes=(("use_sequence_position", None), ("use_absolute_sequence_position", False)),
+    ),
+    AblationVariant(
+        "no_relative_sequence_position",
+        model_changes=(("use_sequence_position", None), ("use_relative_sequence_position", False)),
+    ),
     AblationVariant("standard_attention", baseline="standard"),
     AblationVariant("token_only", baseline="relational"),
     AblationVariant("zone_pooling", baseline="relational_pool"),

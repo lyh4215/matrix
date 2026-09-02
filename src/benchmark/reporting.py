@@ -9,9 +9,13 @@ from typing import Any, Sequence
 
 SUMMARY_FIELDS = (
     ("token_accuracy", "Token Accuracy"),
-    ("zone_accuracy", "Zone Accuracy"),
-    ("exact_mapping_accuracy", "Exact Mapping Accuracy"),
+    ("episode_zone_accuracy", "Episode Zone Accuracy"),
+    ("table_zone_accuracy_argmax", "Table Zone Argmax"),
+    ("table_exact_mapping_accuracy_argmax", "Table Exact Argmax"),
+    ("table_zone_accuracy_assignment", "Table Zone Assignment"),
+    ("table_exact_mapping_accuracy_assignment", "Table Exact Assignment"),
     ("top_3_accuracy", "Top-3 Accuracy"),
+    ("top_5_accuracy", "Top-5 Accuracy"),
     ("iid_unseen_f_accuracy", "IID unseen-f Accuracy"),
     ("ood_relocated_accuracy", "OOD relocated Accuracy"),
 )
@@ -26,9 +30,15 @@ def flatten_run(run: dict) -> dict[str, Any]:
         "best_epoch": run["best_epoch"],
         "best_validation_token_accuracy": run["best_validation_token_accuracy"],
         "token_accuracy": run["iid"]["token_accuracy"],
-        "zone_accuracy": run["iid"]["zone_accuracy"],
-        "exact_mapping_accuracy": run["iid"]["exact_mapping_accuracy_per_f"],
+        "episode_zone_accuracy": run["iid"]["zone_accuracy"],
+        "table_zone_accuracy_argmax": run["iid"]["table_zone_accuracy_argmax"],
+        "table_exact_mapping_accuracy_argmax": run["iid"]["table_exact_mapping_accuracy_argmax"],
+        "table_zone_accuracy_assignment": run["iid"]["table_zone_accuracy_assignment"],
+        "table_exact_mapping_accuracy_assignment": run["iid"][
+            "table_exact_mapping_accuracy_assignment"
+        ],
         "top_3_accuracy": run["iid"]["token_top_3_accuracy"],
+        "top_5_accuracy": run["iid"]["token_top_5_accuracy"],
         "iid_unseen_f_accuracy": run["iid"]["unseen_f_accuracy"],
         "ood_relocated_accuracy": run["ood"]["token_accuracy"],
     }

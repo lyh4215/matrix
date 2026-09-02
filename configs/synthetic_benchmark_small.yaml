@@ -1,4 +1,4 @@
-seeds: [41, 42, 43]
+seeds: [42]
 models:
   - standard
   - relational
@@ -6,26 +6,25 @@ models:
   - relational_match
   - relational_sinkhorn
 include_ablations: true
-output_dir: artifacts/synthetic_benchmark
-max_attention_batches: 10
+output_dir: artifacts/synthetic_benchmark_small
+max_attention_batches: 5
 
 synthetic:
-  num_tables: 2000
   num_zones: 19
   num_digits: 4
-  train_tables: 1600
-  validation_tables: 200
-  test_tables: 200
-  ood_test_tables: 200
-  sequence_lengths: [8, 16, 32, 64, 128]
-  sequences_per_length: 1
+  train_tables: 100
+  validation_tables: 20
+  test_tables: 20
+  ood_test_tables: 20
+  sequence_lengths: [16, 32, 64]
+  sequences_per_length: 2
   plaintext_symbols_per_zone: 64
-  region_width: 128
+  region_width: 96
   locality_noise: 0.1
   allow_cipher_collisions: false
   noise_levels: [0.0, 0.1, 0.25, 0.5]
-  region_gap_min: 32
-  region_gap_max: 96
+  region_gap_min: 24
+  region_gap_max: 64
   iid_value_min: 0
   iid_value_max: 4500
   ood_value_min: 5500
@@ -35,17 +34,17 @@ synthetic:
   language_seed: 1729
 
 model:
-  d_model: 64
+  d_model: 32
   num_heads: 4
   num_layers: 2
-  dim_feedforward: 128
+  dim_feedforward: 64
   dropout: 0.1
   use_absolute_digits: true
   use_digit_delta: true
   use_cipher_delta: true
   use_absolute_sequence_position: true
   use_relative_sequence_position: true
-  distance_clip: 256.0
+  distance_clip: 192.0
   use_log_distance: true
   use_locality_gate: true
   hard_local_radius: null
@@ -53,13 +52,13 @@ model:
   num_sequence_heads: 1
   pooling: attention
   matching: relational
-  sinkhorn_iterations: 20
+  sinkhorn_iterations: 30
   sinkhorn_temperature: 1.0
   sinkhorn_dummy_mode: neutral
 
 training:
-  epochs: 10
-  batch_size: 2
+  epochs: 5
+  batch_size: 8
   learning_rate: 0.0003
   weight_decay: 0.0001
   lambda_local: 0.0

@@ -55,7 +55,10 @@ class ModelConfig:
     use_absolute_digits: bool = True
     use_digit_delta: bool = True
     use_cipher_delta: bool = True
-    use_sequence_position: bool = True
+    # Legacy switch. When set, it controls both new sequence-position switches.
+    use_sequence_position: bool | None = None
+    use_absolute_sequence_position: bool = True
+    use_relative_sequence_position: bool = True
     distance_clip: float = 256.0
     use_log_distance: bool = True
     use_locality_gate: bool = False
@@ -66,8 +69,12 @@ class ModelConfig:
     matching: str = "dot"
     sinkhorn_iterations: int = 20
     sinkhorn_temperature: float = 1.0
+    sinkhorn_dummy_mode: str = "neutral"
 
     def validate(self) -> None:
+        if self.use_sequence_position is not None:
+            self.use_absolute_sequence_position = self.use_sequence_position
+            self.use_relative_sequence_position = self.use_sequence_position
         if self.d_model % self.num_heads:
             raise ValueError("d_model must be divisible by num_heads")
         if self.num_cipher_local_heads + self.num_sequence_heads > self.num_heads:
@@ -78,6 +85,8 @@ class ModelConfig:
             raise ValueError("matching must be dot or relational")
         if self.distance_clip <= 0:
             raise ValueError("distance_clip must be positive")
+        if self.sinkhorn_dummy_mode != "neutral":
+            raise ValueError("only neutral Sinkhorn dummy rows are currently supported")
 
 
 @dataclass

@@ -24,7 +24,8 @@ model:
   use_absolute_digits: true
   use_digit_delta: true
   use_cipher_delta: true
-  use_sequence_position: true
+  use_absolute_sequence_position: true
+  use_relative_sequence_position: true
   distance_clip: 256.0
   use_log_distance: true
   use_locality_gate: true
@@ -35,6 +36,7 @@ model:
   matching: relational
   sinkhorn_iterations: 20
   sinkhorn_temperature: 1.0
+  sinkhorn_dummy_mode: neutral
 
 training:
   epochs: 10
@@ -45,4 +47,3 @@ training:
   lambda_entropy: 0.0
   device: auto
   checkpoint_path: artifacts/model.pt
-

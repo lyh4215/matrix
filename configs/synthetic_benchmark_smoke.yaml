@@ -21,7 +21,8 @@ synthetic:
   plaintext_symbols_per_zone: 32
   region_width: 32
   locality_noise: 0.1
-  noise_levels: [0.0, 0.25]
+  allow_cipher_collisions: false
+  noise_levels: [0.0, 0.1, 0.25]
   region_gap_min: 8
   region_gap_max: 16
   iid_value_min: 0
@@ -41,7 +42,8 @@ model:
   use_absolute_digits: true
   use_digit_delta: true
   use_cipher_delta: true
-  use_sequence_position: true
+  use_absolute_sequence_position: true
+  use_relative_sequence_position: true
   distance_clip: 128.0
   use_log_distance: true
   use_locality_gate: true
@@ -52,6 +54,7 @@ model:
   matching: relational
   sinkhorn_iterations: 10
   sinkhorn_temperature: 1.0
+  sinkhorn_dummy_mode: neutral
 
 training:
   epochs: 1

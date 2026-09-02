@@ -1,6 +1,7 @@
 from functools import partial
 import random
 
+import torch
 from torch.utils.data import DataLoader
 
 from src.benchmark.attention_statistics import DISTANCE_BUCKETS, attention_distance_statistics
@@ -31,7 +32,7 @@ def tiny_synthetic_config() -> ControlledSyntheticConfig:
         plaintext_symbols_per_zone=8,
         region_width=20,
         locality_noise=0.1,
-        noise_levels=(0.0, 0.5),
+        noise_levels=(0.0, 0.1, 0.5),
         region_gap_min=5,
         region_gap_max=10,
         iid_value_min=0,
@@ -54,17 +55,60 @@ def test_controlled_bundle_has_shared_language_and_disjoint_numeric_ood() -> Non
         for split in (bundle.train, bundle.validation, bundle.iid_test, bundle.ood_test)
     ]
     assert all(not groups[left] & groups[right] for left in range(4) for right in range(left + 1, 4))
-    assert set(bundle.iid_by_noise) == {0.0, 0.5}
+    assert set(bundle.iid_by_noise) == {0.0, 0.1, 0.5}
+    assert [item.cipher_values for item in bundle.iid_test] == [
+        item.cipher_values for item in bundle.iid_by_noise[0.1]
+    ]
     assert all(abs(sum(row) - 1.0) < 1e-10 for row in bundle.transition_matrix)
     assert all(max(row) > 2 * min(row) for row in bundle.transition_matrix)
 
 
 def test_zero_noise_preserves_intra_zone_symbol_geometry() -> None:
-    table = ControlledCipherTable("f", (100, 300), (1, 0), 50, 10)
+    table = ControlledCipherTable.create(
+        "f", (100, 300), (1, 0), 50, 10, 0.0, random.Random(3)
+    )
     plain = PlainZoneSequence((0, 0, 0), (0, 4, 9))
-    episode = table.encrypt(plain, locality_noise=0.0, rng=random.Random(3))
+    episode = table.encrypt(plain)
     assert episode.cipher_zone_ids == (1, 1, 1)
     assert episode.cipher_values[0] < episode.cipher_values[1] < episode.cipher_values[2]
+
+
+def test_cipher_mapping_is_deterministic_collision_free_and_table_specific() -> None:
+    first = ControlledCipherTable.create(
+        "f1", (100, 300), (1, 0), 80, 20, 0.25, random.Random(4)
+    )
+    second = ControlledCipherTable.create(
+        "f2", (500, 700), (0, 1), 80, 20, 0.25, random.Random(5)
+    )
+    repeated = PlainZoneSequence((0, 0, 0, 1, 1), (7, 7, 7, 3, 3))
+    encrypted = first.encrypt(repeated)
+    encrypted_again = first.encrypt(repeated)
+    assert encrypted.cipher_values == encrypted_again.cipher_values
+    assert encrypted.cipher_values[0] == encrypted.cipher_values[1] == encrypted.cipher_values[2]
+    assert encrypted.cipher_values[3] == encrypted.cipher_values[4]
+    assert first.symbol_to_cipher[0][7] != second.symbol_to_cipher[0][7]
+    flattened = [value for row in first.symbol_to_cipher for value in row]
+    assert len(flattened) == len(set(flattened))
+
+
+def test_locality_correlation_falls_as_mapping_noise_increases() -> None:
+    clean = ControlledCipherTable.create(
+        "clean", (100,), (0,), 300, 80, 0.0, random.Random(10)
+    )
+    noisy = clean.with_locality_noise(1.0, random.Random(10))
+    symbols = torch.arange(80, dtype=torch.float32)
+
+    def correlation(values: tuple[int, ...]) -> float:
+        cipher = torch.tensor(values, dtype=torch.float32)
+        centered_symbols = symbols - symbols.mean()
+        centered_cipher = cipher - cipher.mean()
+        return float(
+            (centered_symbols * centered_cipher).sum()
+            / (centered_symbols.square().sum().sqrt() * centered_cipher.square().sum().sqrt())
+        )
+
+    assert correlation(clean.symbol_to_cipher[0]) > 0.99
+    assert correlation(noisy.symbol_to_cipher[0]) < 0.7
 
 
 def test_markov_language_is_seeded_and_shared() -> None:
@@ -83,6 +127,8 @@ def test_benchmark_config_and_ablation_conditions() -> None:
     assert [item.ablation_condition[:1] for item in variants] == ["A", "B", "C", "D"]
     assert dict(variants[1].overrides)["use_absolute_digits"] is False
     assert dict(variants[2].overrides)["use_cipher_delta"] is False
+    small = load_benchmark_config("configs/synthetic_benchmark_small.yaml")
+    assert (small.synthetic.train_tables, small.training.epochs) == (100, 5)
 
 
 def test_attention_statistics_aggregate_distance_buckets() -> None:
@@ -123,8 +169,12 @@ def test_reporting_writes_machine_and_human_readable_results(tmp_path) -> None:
         "iid": {
             "token_accuracy": 0.3,
             "zone_accuracy": 0.4,
-            "exact_mapping_accuracy_per_f": 0.1,
+            "table_zone_accuracy_argmax": 0.3,
+            "table_exact_mapping_accuracy_argmax": 0.1,
+            "table_zone_accuracy_assignment": 0.4,
+            "table_exact_mapping_accuracy_assignment": 0.2,
             "token_top_3_accuracy": 0.6,
+            "token_top_5_accuracy": 0.8,
             "unseen_f_accuracy": 0.3,
         },
         "ood": {"token_accuracy": 0.2},

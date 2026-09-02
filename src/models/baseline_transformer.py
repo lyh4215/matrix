@@ -28,10 +28,9 @@ class BaselineTransformer(nn.Module):
 
     def forward(self, digits: Tensor, attention_mask: Tensor) -> Tensor:
         hidden = self.input_projection(digits)
-        if self.config.use_sequence_position:
+        if self.config.use_absolute_sequence_position:
             hidden = hidden + sinusoidal_positions(
                 hidden.shape[1], hidden.shape[2], hidden.device, hidden.dtype
             ).unsqueeze(0)
         hidden = self.encoder(hidden, src_key_padding_mask=~attention_mask)
         return hidden * attention_mask.unsqueeze(-1)
-

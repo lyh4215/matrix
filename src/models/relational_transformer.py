@@ -57,7 +57,7 @@ class RelationalTransformer(nn.Module):
         return_attention: bool = False,
     ) -> tuple[Tensor, list[Tensor]]:
         hidden = self.input_projection(digits)
-        if self.config.use_sequence_position:
+        if self.config.use_absolute_sequence_position:
             hidden = hidden + sinusoidal_positions(
                 hidden.shape[1], hidden.shape[2], hidden.device, hidden.dtype
             ).unsqueeze(0)
