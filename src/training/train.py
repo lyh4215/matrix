@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 from functools import partial
 from pathlib import Path
@@ -97,13 +98,48 @@ def train_epoch(
     optimizer: torch.optim.Optimizer,
     config: ExperimentConfig,
     device: torch.device,
-) -> dict[str, float]:
+    capture_first_step_diagnostics: bool = False,
+) -> dict:
     model.train()
     totals = {"loss": 0.0, "supervised_loss": 0.0, "local_loss": 0.0, "entropy_loss": 0.0}
     batches = 0
+    first_step_diagnostics: dict[str, float | bool | int] | None = None
+
+    def snapshot(module: torch.nn.Module) -> dict[str, Tensor]:
+        return {
+            name: parameter.detach().clone()
+            for name, parameter in module.named_parameters()
+        }
+
+    def gradient_norm(module: torch.nn.Module) -> float:
+        squared = sum(
+            float(parameter.grad.detach().float().square().sum())
+            for parameter in module.parameters()
+            if parameter.grad is not None
+        )
+        return math.sqrt(squared)
+
+    def gradients_finite(module: torch.nn.Module) -> bool:
+        gradients = [
+            parameter.grad
+            for parameter in module.parameters()
+            if parameter.grad is not None
+        ]
+        return bool(gradients) and all(bool(torch.isfinite(gradient).all()) for gradient in gradients)
+
+    def parameter_delta(module: torch.nn.Module, before: dict[str, Tensor]) -> float:
+        squared = sum(
+            float((parameter.detach() - before[name]).float().square().sum())
+            for name, parameter in module.named_parameters()
+        )
+        return math.sqrt(squared)
+
     for original_batch in loader:
         batch = move_batch(original_batch, device)
         optimizer.zero_grad(set_to_none=True)
+        capture = capture_first_step_diagnostics and first_step_diagnostics is None
+        encoder_before = snapshot(model.encoder) if capture else None
+        classifier_before = snapshot(model.token_classifier) if capture else None
         output = model(
             digits=batch["digits"],
             cipher_values=batch["cipher_values"],
@@ -119,12 +155,41 @@ def train_epoch(
             distance_scale=config.model.distance_clip,
         )
         losses.total.backward()
+        if capture:
+            first_step_diagnostics = {
+                "total_gradient_norm": gradient_norm(model),
+                "encoder_gradient_norm": gradient_norm(model.encoder),
+                "token_classifier_gradient_norm": gradient_norm(model.token_classifier),
+                "all_gradients_finite": gradients_finite(model),
+                "encoder_gradients_finite": gradients_finite(model.encoder),
+                "token_classifier_gradients_finite": gradients_finite(model.token_classifier),
+                "encoder_parameters_with_gradient": sum(
+                    parameter.grad is not None for parameter in model.encoder.parameters()
+                ),
+                "token_classifier_parameters_with_gradient": sum(
+                    parameter.grad is not None for parameter in model.token_classifier.parameters()
+                ),
+            }
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
+        if capture:
+            assert first_step_diagnostics is not None
+            assert encoder_before is not None and classifier_before is not None
+            first_step_diagnostics["encoder_parameter_delta_norm"] = parameter_delta(
+                model.encoder, encoder_before
+            )
+            first_step_diagnostics["token_classifier_parameter_delta_norm"] = parameter_delta(
+                model.token_classifier, classifier_before
+            )
         for key, value in losses.detached().items():
             totals[key] += value
         batches += 1
-    return {key: value / max(batches, 1) for key, value in totals.items()}
+    result: dict = {key: value / max(batches, 1) for key, value in totals.items()}
+    if capture_first_step_diagnostics:
+        if first_step_diagnostics is None:
+            raise ValueError("cannot capture first-step diagnostics from an empty loader")
+        result["first_step_diagnostics"] = first_step_diagnostics
+    return result
 
 
 def run_training(config: ExperimentConfig, data_jsonl: str | None = None) -> dict:
@@ -204,4 +269,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

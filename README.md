@@ -139,3 +139,30 @@ plot용 tidy data가 들어갑니다. `summary.md`, train/IID/OOD PNG, run별
 `training_history/`, relational `attention_statistics/`, `checkpoints/`도 함께 생성됩니다.
 각 run이 끝날 때 바로 저장되며, 동일한 옵션으로 `--resume`을 주면 완료된 run을
 건너뜁니다.
+
+## Fixed-f overfit sanity check
+
+unseen-f 실패가 기본 학습 pipeline 문제인지 permutation 일반화 문제인지 구분하기
+위해, 하나의 deterministic cipher table을 train/validation/test에서 공유하는 sanity
+benchmark를 제공합니다. plaintext episode만 split마다 새로 생성됩니다.
+
+```bash
+# 기본: train/validation/test 256/64/64 episodes, 길이 128, 50 epochs
+python sanity_overfit.py
+
+# 동일한 8개 episode를 dropout/weight decay 없이 기본 200 epochs 반복 학습
+python sanity_overfit.py --tiny-memorize
+
+python sanity_overfit.py --epochs 100
+python sanity_overfit.py --train-episodes 512 --batch-size 16
+```
+
+시작할 때 PyTorch/CUDA/GPU/device가 출력되며 CUDA가 있으면 자동으로 사용합니다.
+매 epoch의 train/validation loss·accuracy·prediction entropy·최대 예측 class 비율과
+첫 optimizer step의 encoder/classifier gradient norm 및 parameter delta를 기록합니다.
+
+기본 결과는 `artifacts/sanity_overfit/`, tiny 결과는
+`artifacts/sanity_overfit_tiny/`에 저장됩니다. 두 모델의 history JSON, 고정 table
+mapping, prediction distribution이 포함된 summary JSON/Markdown, checkpoint,
+accuracy/loss curve PNG가 생성됩니다. summary의 성공/실패 문구는 90% 기본 threshold를
+사용하는 heuristic이며 원인에 대한 확정 판정은 아닙니다.

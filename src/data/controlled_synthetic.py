@@ -270,6 +270,29 @@ class ControlledBenchmarkBundle:
         return {str(item.table_id) for item in self.train}
 
 
+@dataclass
+class FixedCipherBenchmarkBundle:
+    """Plaintext-disjoint episodes encrypted by one shared deterministic table."""
+
+    transition_matrix: tuple[tuple[float, ...], ...]
+    cipher_table: ControlledCipherTable
+    train: list[CipherEpisode]
+    validation: list[CipherEpisode]
+    test: list[CipherEpisode]
+
+    @property
+    def table_metadata(self) -> dict:
+        return {
+            "table_id": self.cipher_table.table_id,
+            "region_bases": list(self.cipher_table.region_bases),
+            "zone_to_region": list(self.cipher_table.zone_to_region),
+            "region_width": self.cipher_table.region_width,
+            "symbols_per_zone": self.cipher_table.symbols_per_zone,
+            "symbol_to_cipher": [list(row) for row in self.cipher_table.symbol_to_cipher],
+            "locality_noise": self.cipher_table.locality_noise,
+        }
+
+
 def _make_table(
     table_id: str,
     config: ControlledSyntheticConfig,
@@ -402,4 +425,63 @@ def generate_controlled_benchmark(
         ood_test,
         iid_by_length,
         iid_by_noise,
+    )
+
+
+def generate_fixed_cipher_benchmark(
+    config: ControlledSyntheticConfig,
+    train_episodes: int,
+    validation_episodes: int,
+    test_episodes: int,
+    seed: int,
+) -> FixedCipherBenchmarkBundle:
+    """Generate unique plaintext splits encrypted with exactly one fixed cipher function."""
+    config.validate()
+    if len(config.sequence_lengths) != 1:
+        raise ValueError("fixed-cipher benchmark requires exactly one sequence length")
+    if train_episodes < 1 or validation_episodes < 0 or test_episodes < 0:
+        raise ValueError("fixed-cipher episode counts must be non-negative with a non-empty train split")
+    language = MarkovZoneLanguage.create(
+        config.num_zones,
+        config.plaintext_symbols_per_zone,
+        config.preferred_transitions,
+        config.transition_strength,
+        config.language_seed,
+    )
+    cipher_table = _make_table(
+        "fixed-f",
+        config,
+        random.Random(seed + 101),
+        config.iid_value_min,
+        config.iid_value_max,
+    )
+    length = config.sequence_lengths[0]
+    seen_plaintexts: set[tuple[tuple[int, ...], tuple[int, ...]]] = set()
+
+    def make_split(count: int, split_seed: int) -> list[CipherEpisode]:
+        rng = random.Random(split_seed)
+        episodes: list[CipherEpisode] = []
+        while len(episodes) < count:
+            plaintext = language.sample(length, rng)
+            identity = (plaintext.zones, plaintext.symbol_ids)
+            if identity in seen_plaintexts:
+                continue
+            seen_plaintexts.add(identity)
+            episodes.append(cipher_table.encrypt(plaintext))
+        return episodes
+
+    train = make_split(train_episodes, seed + 1001)
+    validation = make_split(validation_episodes, seed + 1002)
+    test = make_split(test_episodes, seed + 1003)
+    all_episodes = train + validation + test
+    if {str(episode.table_id) for episode in all_episodes} != {cipher_table.table_id}:
+        raise AssertionError("fixed-cipher splits do not share exactly one table")
+    if len({episode.cipher_values for episode in all_episodes}) != len(all_episodes):
+        raise AssertionError("fixed-cipher plaintext splits contain duplicate episodes")
+    return FixedCipherBenchmarkBundle(
+        language.transition_matrix,
+        cipher_table,
+        train,
+        validation,
+        test,
     )
