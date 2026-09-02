@@ -111,4 +111,28 @@ def attention_distance_statistics(
             }
             for head in sorted(head_sums[axis])
         }
+    head_roles = model.encoder.layers[layer].attention.head_roles
+    result["head_roles"] = {str(head): role for head, role in enumerate(head_roles)}
+
+    def ratio(near: float, far: float) -> float | None:
+        return near / far if far > 0.0 else None
+
+    result["cipher_near_far_attention_ratio"] = ratio(
+        result["cipher_distance"]["0-2"]["mean_attention"],
+        result["cipher_distance"]["50+"]["mean_attention"],
+    )
+    local_heads = [head for head, role in enumerate(head_roles) if role == "cipher_local"]
+    local_near = [
+        result["cipher_distance_by_head"][str(head)]["0-2"]["mean_attention"]
+        for head in local_heads
+    ]
+    local_far = [
+        result["cipher_distance_by_head"][str(head)]["50+"]["mean_attention"]
+        for head in local_heads
+    ]
+    result["cipher_local_near_far_attention_ratio"] = (
+        ratio(sum(local_near) / len(local_near), sum(local_far) / len(local_far))
+        if local_heads
+        else None
+    )
     return result

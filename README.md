@@ -90,3 +90,52 @@ digit/cipher delta만 제거하며 공통 sequence-position 관계는 유지합�
 `use_relative_sequence_position`은 relational attention의 sequence delta를
 각각 독립적으로 제어합니다. 이전 `use_sequence_position` 설정도 두 값을 함께
 끄고 켜는 legacy alias로 계속 지원합니다.
+
+## Google Colab
+
+T4에서 128-token ciphertext의 train-table learning curve를 실행하려면 새 Colab
+노트북에서 GPU runtime을 선택한 뒤 다음 셀을 실행합니다.
+
+```python
+!git clone https://github.com/lyh4215/matrix.git
+%cd matrix
+!pip install -e .
+```
+
+GPU가 연결되었는지 먼저 확인할 수 있습니다.
+
+```python
+import torch
+print(torch.cuda.is_available())
+print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU")
+```
+
+두 train 크기와 seed 하나로 실행 경로를 먼저 확인합니다. `--quick`도 실제 학습을
+수행하므로 T4 사용을 권장합니다. quick 결과는 본 실험과 겹치지 않도록
+`artifacts/learning_curve_128_quick/`에 저장됩니다.
+
+```bash
+!python learning_curve.py --quick
+```
+
+본 실험과 주요 실행 옵션은 다음과 같습니다.
+
+```bash
+!python learning_curve.py
+!python learning_curve.py --batch-size 16
+!python learning_curve.py --epochs 20
+!python learning_curve.py --resume
+```
+
+기본값은 train table `50, 100, 200, 400, 800, 1600`, seed `41, 42, 43`,
+`standard`/`relational`, 10 epochs, batch size 8입니다. 모든 episode는 길이 128이며
+table마다 서로 다른 episode 두 개를 사용합니다. validation은 100 tables, IID test와
+numeric-relocated OOD test는 각각 200 tables로 모든 train-size 조건에서 고정됩니다.
+T4 메모리에 여유가 있으면 batch size를 `8 → 16 → 32` 순서로 올려볼 수 있습니다.
+
+결과는 `artifacts/learning_curve_128/`에 저장됩니다. `raw_results.json`과
+`results.csv`에는 run별 metric과 class-collapse 진단이, `learning_curve.csv`에는
+plot용 tidy data가 들어갑니다. `summary.md`, train/IID/OOD PNG, run별
+`training_history/`, relational `attention_statistics/`, `checkpoints/`도 함께 생성됩니다.
+각 run이 끝날 때 바로 저장되며, 동일한 옵션으로 `--resume`을 주면 완료된 run을
+건너뜁니다.

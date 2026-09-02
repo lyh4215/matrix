@@ -9,6 +9,7 @@ from typing import Hashable, Iterable
 
 import torch
 from torch import Tensor
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from ..config import load_config
@@ -63,6 +64,9 @@ def evaluate_model(
     sinkhorn_duplicate_rates: list[float] = []
     sinkhorn_entropies: list[float] = []
     sinkhorn_dummy_column_mass: list[float] = []
+    supervised_loss_sum = 0.0
+    supervised_loss_count = 0
+    prediction_counts: Tensor | None = None
 
     for original_batch in loader:
         batch = _to_device(original_batch, device)
@@ -76,8 +80,18 @@ def evaluate_model(
         valid_scores = output.token_scores[mask]
         valid_targets = batch["zone_labels"][mask]
         predictions = valid_scores.argmax(dim=-1)
+        if prediction_counts is None:
+            prediction_counts = torch.zeros(valid_scores.shape[-1], dtype=torch.long)
+        prediction_counts += torch.bincount(
+            predictions.detach().cpu(), minlength=valid_scores.shape[-1]
+        )
         token_correct += int((predictions == valid_targets).sum())
         token_total += valid_targets.numel()
+        if output.pooled_zones is None:
+            supervised_loss_sum += float(
+                F.cross_entropy(valid_scores, valid_targets, reduction="sum")
+            )
+            supervised_loss_count += valid_targets.numel()
         for k in (1, 3, 5):
             token_top[k] += _correct_at_k(valid_scores, valid_targets, k)
 
@@ -114,6 +128,18 @@ def evaluate_model(
             zone_targets = pool_zone_targets(
                 batch["zone_labels"], batch["cipher_zone_ids"], output.pooled_zones, mask
             )
+            valid_zone_scores = output.zone_scores[output.pooled_zones.mask]
+            valid_zone_targets = zone_targets[output.pooled_zones.mask]
+            loss_function = F.nll_loss if getattr(model, "uses_sinkhorn", False) else F.cross_entropy
+            loss_scores = (
+                valid_zone_scores.clamp_min(1e-8).log()
+                if getattr(model, "uses_sinkhorn", False)
+                else valid_zone_scores
+            )
+            supervised_loss_sum += float(
+                loss_function(loss_scores, valid_zone_targets, reduction="sum")
+            )
+            supervised_loss_count += valid_zone_targets.numel()
             for row, table_id in enumerate(batch["table_ids"]):
                 row_mask = output.pooled_zones.mask[row]
                 scores = output.zone_scores[row, row_mask]
@@ -185,6 +211,7 @@ def evaluate_model(
 
     metrics: dict[str, float | dict[str, float]] = {
         "token_accuracy": token_correct / token_total,
+        "supervised_loss": supervised_loss_sum / max(supervised_loss_count, 1),
         "zone_accuracy": zone_correct / max(zone_total, 1),
         "exact_mapping_accuracy_per_episode": sum(episode_exact) / max(len(episode_exact), 1),
         "all_episodes_exact_per_f": sum(table_correct.values()) / max(len(table_correct), 1),
@@ -198,6 +225,17 @@ def evaluate_model(
         ),
         "unseen_f_accuracy": unseen_correct / max(unseen_total, 1),
     }
+    assert prediction_counts is not None
+    prediction_probabilities = prediction_counts.to(torch.float64) / token_total
+    nonzero_probabilities = prediction_probabilities[prediction_probabilities > 0]
+    metrics["predicted_zone_distribution"] = {
+        str(index): float(probability)
+        for index, probability in enumerate(prediction_probabilities)
+    }
+    metrics["prediction_entropy"] = float(
+        -(nonzero_probabilities * nonzero_probabilities.log()).sum()
+    )
+    metrics["max_predicted_class_fraction"] = float(prediction_probabilities.max())
     for k in (1, 3, 5):
         metrics[f"token_top_{k}_accuracy"] = token_top[k] / token_total
         metrics[f"zone_top_{k}_accuracy"] = zone_top[k] / max(zone_total, 1)

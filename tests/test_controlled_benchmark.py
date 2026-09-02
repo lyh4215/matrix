@@ -156,6 +156,8 @@ def test_attention_statistics_aggregate_distance_buckets() -> None:
     assert set(stats["cipher_distance"]) == names
     assert stats["sequence_distance"]["0-2"]["pair_count"] > 0
     assert set(stats["cipher_distance_by_head"]) == {"0", "1"}
+    assert stats["head_roles"] == {"0": "cipher_local", "1": "sequence"}
+    assert "cipher_local_near_far_attention_ratio" in stats
 
 
 def test_reporting_writes_machine_and_human_readable_results(tmp_path) -> None:
