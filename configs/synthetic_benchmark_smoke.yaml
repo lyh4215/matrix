@@ -1,0 +1,64 @@
+seeds: [42]
+models:
+  - standard
+  - relational
+  - relational_pool
+  - relational_match
+  - relational_sinkhorn
+include_ablations: true
+output_dir: tmp/synthetic_benchmark_smoke
+max_attention_batches: 1
+
+synthetic:
+  num_zones: 19
+  num_digits: 4
+  train_tables: 4
+  validation_tables: 2
+  test_tables: 2
+  ood_test_tables: 2
+  sequence_lengths: [8, 16]
+  sequences_per_length: 1
+  plaintext_symbols_per_zone: 32
+  region_width: 32
+  locality_noise: 0.1
+  noise_levels: [0.0, 0.25]
+  region_gap_min: 8
+  region_gap_max: 16
+  iid_value_min: 0
+  iid_value_max: 1800
+  ood_value_min: 7000
+  ood_value_max: 9000
+  preferred_transitions: 3
+  transition_strength: 8.0
+  language_seed: 1729
+
+model:
+  d_model: 16
+  num_heads: 2
+  num_layers: 1
+  dim_feedforward: 32
+  dropout: 0.0
+  use_absolute_digits: true
+  use_digit_delta: true
+  use_cipher_delta: true
+  use_sequence_position: true
+  distance_clip: 128.0
+  use_log_distance: true
+  use_locality_gate: true
+  hard_local_radius: null
+  num_cipher_local_heads: 1
+  num_sequence_heads: 1
+  pooling: mean
+  matching: relational
+  sinkhorn_iterations: 10
+  sinkhorn_temperature: 1.0
+
+training:
+  epochs: 1
+  batch_size: 2
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  lambda_local: 0.0
+  lambda_entropy: 0.0
+  device: cpu
+  checkpoint_path: tmp/unused.pt

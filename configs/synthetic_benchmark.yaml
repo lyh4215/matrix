@@ -1,0 +1,65 @@
+seeds: [41, 42, 43]
+models:
+  - standard
+  - relational
+  - relational_pool
+  - relational_match
+  - relational_sinkhorn
+include_ablations: true
+output_dir: artifacts/synthetic_benchmark
+max_attention_batches: 10
+
+synthetic:
+  num_tables: 2000
+  num_zones: 19
+  num_digits: 4
+  train_tables: 1600
+  validation_tables: 200
+  test_tables: 200
+  ood_test_tables: 200
+  sequence_lengths: [8, 16, 32, 64, 128]
+  sequences_per_length: 1
+  plaintext_symbols_per_zone: 64
+  region_width: 128
+  locality_noise: 0.1
+  noise_levels: [0.0, 0.1, 0.25, 0.5]
+  region_gap_min: 32
+  region_gap_max: 96
+  iid_value_min: 0
+  iid_value_max: 4500
+  ood_value_min: 5500
+  ood_value_max: 10000
+  preferred_transitions: 3
+  transition_strength: 8.0
+  language_seed: 1729
+
+model:
+  d_model: 64
+  num_heads: 4
+  num_layers: 2
+  dim_feedforward: 128
+  dropout: 0.1
+  use_absolute_digits: true
+  use_digit_delta: true
+  use_cipher_delta: true
+  use_sequence_position: true
+  distance_clip: 256.0
+  use_log_distance: true
+  use_locality_gate: true
+  hard_local_radius: null
+  num_cipher_local_heads: 2
+  num_sequence_heads: 1
+  pooling: attention
+  matching: relational
+  sinkhorn_iterations: 20
+  sinkhorn_temperature: 1.0
+
+training:
+  epochs: 10
+  batch_size: 2
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  lambda_local: 0.0
+  lambda_entropy: 0.0
+  device: auto
+  checkpoint_path: artifacts/unused.pt

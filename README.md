@@ -45,3 +45,33 @@ cross matching, Sinkhorn, random offset, zone relocation을 각각 끌 수 있�
 - `src.analysis.attention_debug.inspect_attention`: head별 attention 이웃 분석
 
 초성 label 순서는 `ㄱ ㄲ ㄴ ㄷ ㄸ ㄹ ㅁ ㅂ ㅃ ㅅ ㅆ ㅇ ㅈ ㅉ ㅊ ㅋ ㅌ ㅍ ㅎ`입니다.
+
+## Controlled synthetic benchmark
+
+실제 한국어 corpus 없이 공통 Markov zone language와 table별 독립적인
+zone→numeric-region permutation을 사용해 다섯 모델을 비교할 수 있습니다.
+
+```bash
+# 수 초 안에 전체 pipeline, 5개 baseline, A-D ablation을 확인
+python -m src.benchmark.runner --config configs/synthetic_benchmark_smoke.yaml
+
+# 1600/200/200개의 train/validation/IID-test table, 3 seeds
+python -m src.benchmark.runner --config configs/synthetic_benchmark.yaml
+```
+
+전체 설정은 추가로 200개의 numeric-support-shifted OOD table을 생성합니다.
+모든 split은 서로 다른 `table_id`와 plaintext sequence를 사용하며, transition
+matrix만 공유합니다. 기본 locality noise로 학습한 모델을 `0.0, 0.1, 0.25,
+0.5` noise에서 다시 평가합니다. noise는 region width 대비 Gaussian 표준편차이며,
+강한 값에서는 일부 token이 region 경계를 넘으므로 locality 자체가 점차 약해집니다.
+
+결과 디렉터리에는 다음 파일이 생성됩니다.
+
+- `results.json`: seed별 전체 metric, 길이/noise 결과, attention-distance 통계
+- `results.csv`: 모델 및 seed별 비교 행
+- `summary.md`: 평균 ± 표준편차 비교표
+- `checkpoints/`: 각 모델과 seed의 best-validation checkpoint
+
+`include_ablations: true`이면 relational baseline(A)에 더해 absolute digits와
+cipher-relative feature를 켜고 끈 B/C/D 조건도 실행합니다. `relative OFF`는
+digit/cipher delta만 제거하며 공통 sequence-position 관계는 유지합니다.
