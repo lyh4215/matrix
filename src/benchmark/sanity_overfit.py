@@ -69,12 +69,13 @@ def _evaluate_optional(
     )
 
 
-def _train_model(
+def train_fixed_cipher_model(
     model_name: str,
     bundle: FixedCipherBenchmarkBundle,
     config: BenchmarkConfig,
     seed: int,
     device: torch.device,
+    condition: str | None = None,
 ) -> dict:
     _seed_everything(seed)
     model_config = copy.deepcopy(config.model)
@@ -136,7 +137,10 @@ def _train_model(
             ),
         }
         history.append(record)
-        print(json.dumps({"model": model_name, **record}, ensure_ascii=False), flush=True)
+        output_record = {"model": model_name, **record}
+        if condition is not None:
+            output_record = {"condition": condition, **output_record}
+        print(json.dumps(output_record, ensure_ascii=False), flush=True)
         selection_score = float(
             validation_metrics["token_accuracy"] if validation_metrics else train_metrics["token_accuracy"]
         )
@@ -158,7 +162,8 @@ def _train_model(
     }
     checkpoint_dir = Path(config.output_dir) / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = checkpoint_dir / f"{model_name}.pt"
+    checkpoint_name = f"{condition}_{model_name}.pt" if condition else f"{model_name}.pt"
+    checkpoint_path = checkpoint_dir / checkpoint_name
     torch.save(
         {
             "model_state": best_state,
@@ -169,7 +174,7 @@ def _train_model(
         },
         checkpoint_path,
     )
-    return {
+    result = {
         "model": model_name,
         "parameter_count": sum(parameter.numel() for parameter in model.parameters()),
         "best_epoch": best_epoch,
@@ -180,9 +185,12 @@ def _train_model(
         "history": history,
         "checkpoint": str(checkpoint_path),
     }
+    if condition is not None:
+        result["condition"] = condition
+    return result
 
 
-def _print_environment(device: torch.device) -> None:
+def print_environment(device: torch.device) -> None:
     cuda_available = torch.cuda.is_available()
     print(f"PyTorch: {torch.__version__}")
     print(f"CUDA available: {cuda_available}")
@@ -212,7 +220,7 @@ def run_sanity_overfit(
         raise ValueError("success threshold must be in (0, 1]")
     config.validate()
     device = resolve_device(config.training.device)
-    _print_environment(device)
+    print_environment(device)
     seed = int(config.seeds[0])
     bundle = generate_fixed_cipher_benchmark(
         config.synthetic,
@@ -241,7 +249,7 @@ def run_sanity_overfit(
     }
     paths: dict[str, str] = {}
     for model_name in config.models:
-        result = _train_model(model_name, bundle, config, seed, device)
+        result = train_fixed_cipher_model(model_name, bundle, config, seed, device)
         results.append(result)
         paths = write_sanity_results(
             results,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import statistics
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
@@ -293,6 +294,33 @@ class FixedCipherBenchmarkBundle:
         }
 
 
+@dataclass
+class TranslatedFixedCipherBenchmark:
+    """A fixed-f bundle observed in independently translated episode coordinates."""
+
+    bundle: FixedCipherBenchmarkBundle
+    offsets: dict[str, list[int]]
+
+    @property
+    def translation_metadata(self) -> dict:
+        def summarize(values: Sequence[int]) -> dict[str, float | int | None]:
+            return {
+                "count": len(values),
+                "min": min(values) if values else None,
+                "max": max(values) if values else None,
+                "mean": statistics.mean(values) if values else None,
+                "std": statistics.pstdev(values) if values else None,
+            }
+
+        all_offsets = [offset for values in self.offsets.values() for offset in values]
+        return {
+            "overall": summarize(all_offsets),
+            "by_split": {
+                split: summarize(values) for split, values in self.offsets.items()
+            },
+        }
+
+
 def _make_table(
     table_id: str,
     config: ControlledSyntheticConfig,
@@ -485,3 +513,66 @@ def generate_fixed_cipher_benchmark(
         validation,
         test,
     )
+
+
+def translate_cipher_episode(
+    episode: CipherEpisode,
+    offset: int,
+    num_digits: int,
+) -> CipherEpisode:
+    """Move one complete episode without changing any pairwise cipher differences."""
+    translated = tuple(value + offset for value in episode.cipher_values)
+    upper = 10**num_digits
+    if min(translated) < 0 or max(translated) >= upper:
+        raise ValueError(f"translation moves ciphertext outside [0, {upper})")
+    return CipherEpisode(
+        translated,
+        episode.zone_labels,
+        episode.cipher_zone_ids,
+        episode.table_id,
+    )
+
+
+def translate_fixed_cipher_benchmark(
+    original: FixedCipherBenchmarkBundle,
+    num_digits: int,
+    seed: int,
+) -> TranslatedFixedCipherBenchmark:
+    """Apply one broad, independently sampled integer offset to every episode."""
+    numeric_max = 10**num_digits - 1
+
+    def translate_split(
+        episodes: Sequence[CipherEpisode], split_seed: int
+    ) -> tuple[list[CipherEpisode], list[int]]:
+        rng = random.Random(split_seed)
+        translated: list[CipherEpisode] = []
+        offsets: list[int] = []
+        for episode in episodes:
+            lower = -min(episode.cipher_values)
+            upper = numeric_max - max(episode.cipher_values)
+            signed_ranges: list[tuple[int, int]] = []
+            if lower <= -1:
+                signed_ranges.append((lower, -1))
+            if upper >= 1:
+                signed_ranges.append((1, upper))
+            offset = rng.randint(*rng.choice(signed_ranges)) if signed_ranges else 0
+            translated.append(translate_cipher_episode(episode, offset, num_digits))
+            offsets.append(offset)
+        return translated, offsets
+
+    translated_splits: dict[str, list[CipherEpisode]] = {}
+    offsets: dict[str, list[int]] = {}
+    for split, episodes, split_seed in (
+        ("train", original.train, seed + 2001),
+        ("validation", original.validation, seed + 2002),
+        ("test", original.test, seed + 2003),
+    ):
+        translated_splits[split], offsets[split] = translate_split(episodes, split_seed)
+    bundle = FixedCipherBenchmarkBundle(
+        original.transition_matrix,
+        original.cipher_table,
+        translated_splits["train"],
+        translated_splits["validation"],
+        translated_splits["test"],
+    )
+    return TranslatedFixedCipherBenchmark(bundle, offsets)

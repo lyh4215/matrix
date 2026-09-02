@@ -166,3 +166,29 @@ python sanity_overfit.py --train-episodes 512 --batch-size 16
 mapping, prediction distribution이 포함된 summary JSON/Markdown, checkpoint,
 accuracy/loss curve PNG가 생성됩니다. summary의 성공/실패 문구는 90% 기본 threshold를
 사용하는 heuristic이며 원인에 대한 확정 판정은 아닙니다.
+
+## Absolute-number translation ablation
+
+fixed-f 성능이 특정 절대 숫자 범위 암기에 의존하는지 확인하기 위해, 같은 plaintext와
+underlying cipher mapping을 original/translated 조건에서 비교합니다. Translated 조건은
+episode마다 하나의 seeded random integer offset을 모든 token에 동일하게 더합니다.
+offset은 음수/양수 방향을 모두 샘플링하며 모든 결과를 `0..9999` 안에 유지하므로
+pairwise cipher difference와 local geometry는 정확히 보존됩니다.
+
+```bash
+# original + translated, Standard + Relational
+python translation_ablation.py
+
+# translated 조건만
+python translation_ablation.py --condition translated
+
+# translated 조건을 100 epochs 학습
+python translation_ablation.py --condition translated --epochs 100
+```
+
+기본값은 길이 128, train/validation/test `256/64/64` episodes, seed 42, 50 epochs,
+batch size 8입니다. 결과는 `artifacts/translation_ablation/`의 raw/summary JSON과
+Markdown, condition/model별 history와 checkpoint, validation accuracy PNG에 저장됩니다.
+summary에는 Standard/Relational translation drop과 translated 조건의 모델 간 test
+accuracy 차이가 포함됩니다. 동일 plaintext를 여러 valid offset으로 옮긴 hidden-state
+cosine similarity 및 prediction consistency도 보조 지표로 기록합니다.
