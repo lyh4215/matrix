@@ -1,0 +1,48 @@
+seed: 42
+baseline: relational_sinkhorn
+
+data:
+  num_digits: 4
+  num_tables: 30
+  sentences_per_table: 3
+  min_length: 8
+  max_length: 24
+  train_fraction: 0.8
+  validation_fraction: 0.1
+  random_offset: false
+  max_random_offset: 500
+  offset_mode: clamp
+  zone_relocation: false
+
+model:
+  d_model: 64
+  num_heads: 4
+  num_layers: 2
+  dim_feedforward: 128
+  dropout: 0.1
+  num_zones: 19
+  use_absolute_digits: true
+  use_digit_delta: true
+  use_cipher_delta: true
+  use_sequence_position: true
+  distance_clip: 256.0
+  use_log_distance: true
+  use_locality_gate: true
+  hard_local_radius: null
+  num_cipher_local_heads: 2
+  num_sequence_heads: 1
+  pooling: attention
+  matching: relational
+  sinkhorn_iterations: 20
+  sinkhorn_temperature: 1.0
+
+training:
+  epochs: 10
+  batch_size: 8
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  lambda_local: 0.0
+  lambda_entropy: 0.0
+  device: auto
+  checkpoint_path: artifacts/model.pt
+
