@@ -32,6 +32,7 @@ from .representation_statistics import representation_zone_statistics
 TRAIN_TABLE_COUNTS = (50, 100, 200, 400, 800, 1600)
 QUICK_TRAIN_TABLE_COUNTS = (50, 200)
 QUICK_SEEDS = (42,)
+LEARNING_CURVE_MODELS = ("standard", "relational", "relational_gated")
 
 
 def _loader(
@@ -134,6 +135,15 @@ def _train_one(
                 "max_predicted_class_fraction"
             ],
         }
+        for key, value in validation_metrics.items():
+            if key.startswith("same_region_") or key in {
+                "predicted_same_region_rate",
+                "true_same_gate_mean",
+                "true_different_gate_mean",
+                "mean_local_gate_weight",
+                "mean_cross_gate_weight",
+            }:
+                record[f"validation_{key}"] = value
         history.append(record)
         print(
             json.dumps(
@@ -178,7 +188,7 @@ def _train_one(
             device,
             max_batches=config.max_attention_batches,
         )
-        if model_name == "relational"
+        if model.is_relational
         else None
     )
 
@@ -266,8 +276,14 @@ def run_learning_curve(
     counts = tuple(train_table_counts)
     if not counts or tuple(sorted(set(counts))) != counts or min(counts) < 1:
         raise ValueError("train table counts must be positive, unique, and increasing")
-    if tuple(config.models) != ("standard", "relational") or config.include_ablations:
-        raise ValueError("learning curve supports exactly standard and relational without ablations")
+    if (
+        not config.models
+        or set(config.models) - set(LEARNING_CURVE_MODELS)
+        or config.include_ablations
+    ):
+        raise ValueError(
+            "learning curve models must be selected from standard, relational, relational_gated"
+        )
     config.synthetic.train_tables = max(counts)
     config.validate()
     device = resolve_device(config.training.device)
@@ -353,6 +369,7 @@ def main() -> None:
         description="Run the 128-token Standard vs Relational unseen-f learning curve"
     )
     parser.add_argument("--config", default="configs/learning_curve.yaml")
+    parser.add_argument("--models", nargs="+", choices=LEARNING_CURVE_MODELS)
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"))
@@ -366,6 +383,8 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_benchmark_config(args.config)
+    if args.models:
+        config.models = tuple(args.models)
     counts = tuple(
         args.train_table_counts
         or (QUICK_TRAIN_TABLE_COUNTS if args.quick else TRAIN_TABLE_COUNTS)

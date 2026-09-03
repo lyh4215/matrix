@@ -41,6 +41,12 @@ class BenchmarkConfig:
         self.model.validate()
         if self.training.epochs < 1 or self.training.batch_size < 1:
             raise ValueError("training epochs and batch size must be positive")
+        if min(
+            self.training.lambda_local,
+            self.training.lambda_entropy,
+            self.training.lambda_same_region,
+        ) < 0:
+            raise ValueError("training loss weights must be non-negative")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -26,6 +26,7 @@ from ..data.dataset import (
 from ..models.decoder import NeuralCipherDecoder
 from .evaluate import evaluate_model
 from .losses import compute_loss
+from .same_region import SameRegionMetricAccumulator
 
 
 def resolve_device(requested: str) -> torch.device:
@@ -101,9 +102,16 @@ def train_epoch(
     capture_first_step_diagnostics: bool = False,
 ) -> dict:
     model.train()
-    totals = {"loss": 0.0, "supervised_loss": 0.0, "local_loss": 0.0, "entropy_loss": 0.0}
+    totals = {
+        "loss": 0.0,
+        "supervised_loss": 0.0,
+        "local_loss": 0.0,
+        "entropy_loss": 0.0,
+        "same_region_loss": 0.0,
+    }
     batches = 0
     first_step_diagnostics: dict[str, float | bool | int] | None = None
+    same_region_metrics = SameRegionMetricAccumulator()
 
     def snapshot(module: torch.nn.Module) -> dict[str, Tensor]:
         return {
@@ -152,8 +160,15 @@ def train_epoch(
             uses_sinkhorn=model.uses_sinkhorn,
             lambda_local=config.training.lambda_local,
             lambda_entropy=config.training.lambda_entropy,
+            lambda_same_region=config.training.lambda_same_region,
             distance_scale=config.model.distance_clip,
         )
+        if output.same_region_logits:
+            same_region_metrics.update(
+                output.same_region_logits[-1],
+                batch["cipher_zone_ids"],
+                batch["attention_mask"],
+            )
         losses.total.backward()
         if capture:
             first_step_diagnostics = {
@@ -185,6 +200,8 @@ def train_epoch(
             totals[key] += value
         batches += 1
     result: dict = {key: value / max(batches, 1) for key, value in totals.items()}
+    if same_region_metrics.count:
+        result.update(same_region_metrics.compute())
     if capture_first_step_diagnostics:
         if first_step_diagnostics is None:
             raise ValueError("cannot capture first-step diagnostics from an empty loader")

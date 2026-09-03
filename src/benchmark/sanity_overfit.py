@@ -190,14 +190,17 @@ def train_fixed_cipher_model(
     return result
 
 
-def print_environment(device: torch.device) -> None:
+def print_environment(
+    device: torch.device,
+    benchmark_name: str = "Fixed-f sanity benchmark",
+) -> None:
     cuda_available = torch.cuda.is_available()
     print(f"PyTorch: {torch.__version__}")
     print(f"CUDA available: {cuda_available}")
     print(f"GPU: {torch.cuda.get_device_name(0) if cuda_available else 'None'}")
     print(f"Device: {device}")
     if not cuda_available:
-        print("WARNING: CUDA is not available. Fixed-f sanity benchmark may be slow.")
+        print(f"WARNING: CUDA is not available. {benchmark_name} may be slow.")
 
 
 def run_sanity_overfit(

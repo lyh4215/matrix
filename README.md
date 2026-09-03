@@ -29,6 +29,7 @@ python -m src.training.train --config configs/default.yaml \
 
 - `standard`: digit projection + standard Transformer + token classifier
 - `relational`: relational self-attention + token classifier
+- `relational_gated`: shared same-region gate + local/cross relational branches + token classifier
 - `relational_pool`: relational attention + cipher-zone pooling + classifier
 - `relational_match`: pooling + Hangul prototype relation matching
 - `relational_sinkhorn`: matching + rectangular Sinkhorn
@@ -192,3 +193,41 @@ Markdown, condition/model별 history와 checkpoint, validation accuracy PNG에 �
 summary에는 Standard/Relational translation drop과 translated 조건의 모델 간 test
 accuracy 차이가 포함됩니다. 동일 plaintext를 여러 valid offset으로 옮긴 hidden-state
 cosine similarity 및 prediction consistency도 보조 지표로 기록합니다.
+
+## Same-region gated attention and grouping probe
+
+`relational_gated`는 기존 `relational`을 변경하지 않는 별도 모델입니다. Head-shared
+same-region gate는 unsigned cipher distance, digit equality/absolute difference, symmetric
+hidden-pair context를 사용하되 signed global numeric ordering은 받지 않습니다. Local branch는
+signed numeric/digit delta를 사용할 수 있고, cross branch는 hidden-pair와 sequence relation만
+사용하며 cipher/digit numeric delta를 받지 않습니다. Semantic 학습에서는 padding/self pair를
+제외한 same-region BCE를 positive/negative class별로 평균해 `lambda_same_region` 가중치로
+zone loss에 더합니다.
+
+Permutation-invariant grouping만 먼저 검사하려면 다음을 실행합니다.
+
+```bash
+python same_region_probe.py \
+  --models standard relational relational_gated \
+  --train-tables 50 \
+  --validation-tables 20 \
+  --test-tables 50 \
+  --epochs 50 \
+  --batch-size 8 \
+  --seed 42
+```
+
+결과는 `artifacts/same_region_probe/`에 저장됩니다. F1/balanced accuracy, distance bucket,
+nearby cross-region hard negative, far within-region hard positive, gate separation과 validation에서
+선택한 pure distance-threshold baseline을 함께 기록합니다.
+
+19-way unseen-f semantic benchmark에서 gated 모델만 실행할 수도 있습니다.
+
+```bash
+python learning_curve.py \
+  --models relational_gated \
+  --train-table-counts 50 \
+  --seeds 42 \
+  --epochs 100 \
+  --output-dir artifacts/learning_curve_gated_50f
+```

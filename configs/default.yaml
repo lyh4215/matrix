@@ -37,6 +37,7 @@ model:
   sinkhorn_iterations: 20
   sinkhorn_temperature: 1.0
   sinkhorn_dummy_mode: neutral
+  same_region_gate_hidden_dim: 32
 
 training:
   epochs: 10
@@ -45,5 +46,6 @@ training:
   weight_decay: 0.0001
   lambda_local: 0.0
   lambda_entropy: 0.0
+  lambda_same_region: 0.0
   device: auto
   checkpoint_path: artifacts/model.pt

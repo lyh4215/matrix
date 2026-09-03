@@ -8,6 +8,7 @@ from torch.nn import functional as F
 
 from ..models.decoder import DecoderOutput
 from ..models.zone_pooling import pool_zone_targets
+from .same_region import balanced_same_region_loss
 
 
 @dataclass
@@ -16,6 +17,7 @@ class LossBreakdown:
     supervised: Tensor
     local: Tensor
     entropy: Tensor
+    same_region: Tensor
 
     def detached(self) -> dict[str, float]:
         return {
@@ -23,6 +25,7 @@ class LossBreakdown:
             "supervised_loss": float(self.supervised.detach()),
             "local_loss": float(self.local.detach()),
             "entropy_loss": float(self.entropy.detach()),
+            "same_region_loss": float(self.same_region.detach()),
         }
 
 
@@ -64,6 +67,7 @@ def compute_loss(
     uses_sinkhorn: bool = False,
     lambda_local: float = 0.0,
     lambda_entropy: float = 0.0,
+    lambda_same_region: float = 0.0,
     distance_scale: float = 256.0,
 ) -> LossBreakdown:
     if output.pooled_zones is None:
@@ -114,6 +118,24 @@ def compute_loss(
         if lambda_entropy and output.zone_scores is not None and output.pooled_zones is not None
         else zero
     )
-    total = supervised + lambda_local * local + lambda_entropy * entropy
-    return LossBreakdown(total, supervised, local, entropy)
-
+    same_region = (
+        torch.stack(
+            [
+                balanced_same_region_loss(
+                    logits,
+                    batch["cipher_zone_ids"],
+                    batch["attention_mask"],
+                )
+                for logits in output.same_region_logits
+            ]
+        ).mean()
+        if lambda_same_region and output.same_region_logits
+        else zero
+    )
+    total = (
+        supervised
+        + lambda_local * local
+        + lambda_entropy * entropy
+        + lambda_same_region * same_region
+    )
+    return LossBreakdown(total, supervised, local, entropy, same_region)

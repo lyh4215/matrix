@@ -10,6 +10,7 @@ import yaml
 BASELINES = {
     "standard",
     "relational",
+    "relational_gated",
     "relational_pool",
     "relational_match",
     "relational_sinkhorn",
@@ -70,6 +71,7 @@ class ModelConfig:
     sinkhorn_iterations: int = 20
     sinkhorn_temperature: float = 1.0
     sinkhorn_dummy_mode: str = "neutral"
+    same_region_gate_hidden_dim: int = 32
 
     def validate(self) -> None:
         if self.use_sequence_position is not None:
@@ -87,6 +89,8 @@ class ModelConfig:
             raise ValueError("distance_clip must be positive")
         if self.sinkhorn_dummy_mode != "neutral":
             raise ValueError("only neutral Sinkhorn dummy rows are currently supported")
+        if self.same_region_gate_hidden_dim < 1:
+            raise ValueError("same_region_gate_hidden_dim must be positive")
 
 
 @dataclass
@@ -97,6 +101,7 @@ class TrainingConfig:
     weight_decay: float = 1e-4
     lambda_local: float = 0.0
     lambda_entropy: float = 0.0
+    lambda_same_region: float = 0.0
     device: str = "auto"
     checkpoint_path: str = "artifacts/model.pt"
 

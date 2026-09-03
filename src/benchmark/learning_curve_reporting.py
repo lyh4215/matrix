@@ -9,7 +9,7 @@ from typing import Any, Sequence
 
 
 SPLITS = ("train", "validation", "iid", "ood")
-MODELS = ("standard", "relational")
+MODELS = ("standard", "relational", "relational_gated")
 
 
 def run_key(run: dict) -> tuple[int, int, str]:
@@ -107,6 +107,10 @@ def learning_curve_summary(runs: Sequence[dict], train_table_counts: Sequence[in
         "Standard OOD",
         "Relational OOD",
         "Rel. − Std. OOD",
+        "Relational Gated IID",
+        "Gated − Legacy IID",
+        "Relational Gated OOD",
+        "Gated − Legacy OOD",
     )
     lines = [
         "# Standard vs Relational learning curve",
@@ -115,7 +119,12 @@ def learning_curve_summary(runs: Sequence[dict], train_table_counts: Sequence[in
         "| " + " | ".join(["---"] * len(headers)) + " |",
     ]
     for count in train_table_counts:
-        differences: dict[str, list[float]] = {"iid": [], "ood": []}
+        differences: dict[str, list[float]] = {
+            "iid": [],
+            "ood": [],
+            "gated_iid": [],
+            "gated_ood": [],
+        }
         seeds = sorted({seed for table_count, seed, _name in paired if table_count == count})
         for seed in seeds:
             for split in ("iid", "ood"):
@@ -123,6 +132,9 @@ def learning_curve_summary(runs: Sequence[dict], train_table_counts: Sequence[in
                 relational = paired.get((count, seed, f"relational_{split}"))
                 if standard is not None and relational is not None:
                     differences[split].append(relational - standard)
+                gated = paired.get((count, seed, f"relational_gated_{split}"))
+                if relational is not None and gated is not None:
+                    differences[f"gated_{split}"].append(gated - relational)
         values = [
             str(count),
             _format(grouped[(count, "standard", "iid")]),
@@ -131,6 +143,10 @@ def learning_curve_summary(runs: Sequence[dict], train_table_counts: Sequence[in
             _format(grouped[(count, "standard", "ood")]),
             _format(grouped[(count, "relational", "ood")]),
             _format(differences["ood"]),
+            _format(grouped[(count, "relational_gated", "iid")]),
+            _format(differences["gated_iid"]),
+            _format(grouped[(count, "relational_gated", "ood")]),
+            _format(differences["gated_ood"]),
         ]
         lines.append("| " + " | ".join(values) + " |")
 
@@ -156,7 +172,11 @@ def _plot_learning_curves(runs: Sequence[dict], output_dir: Path) -> None:
     matplotlib.use("Agg")
     from matplotlib import pyplot as plt
 
-    colors = {"standard": "#4C72B0", "relational": "#DD8452"}
+    colors = {
+        "standard": "#4C72B0",
+        "relational": "#55A868",
+        "relational_gated": "#DD8452",
+    }
     for split in ("iid", "ood", "train"):
         figure, axis = plt.subplots(figsize=(7.2, 4.6))
         for model in MODELS:

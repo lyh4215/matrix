@@ -37,7 +37,14 @@ def sample_batch() -> dict:
 
 @pytest.mark.parametrize(
     "baseline",
-    ["standard", "relational", "relational_pool", "relational_match", "relational_sinkhorn"],
+    [
+        "standard",
+        "relational",
+        "relational_gated",
+        "relational_pool",
+        "relational_match",
+        "relational_sinkhorn",
+    ],
 )
 def test_all_baselines_forward_and_backward(baseline: str) -> None:
     batch = sample_batch()

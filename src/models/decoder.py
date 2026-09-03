@@ -7,6 +7,7 @@ from torch import Tensor, nn
 
 from ..config import BASELINES, ModelConfig
 from .baseline_transformer import BaselineTransformer
+from .gated_relational_transformer import GatedRelationalTransformer
 from .relational_transformer import RelationalTransformer
 from .sinkhorn import sinkhorn
 from .zone_matcher import ZoneMatcher
@@ -21,10 +22,11 @@ class DecoderOutput:
     raw_zone_scores: Tensor | None = None
     pooled_zones: PooledZones | None = None
     attentions: list[Tensor] | None = None
+    same_region_logits: list[Tensor] | None = None
 
 
 class NeuralCipherDecoder(nn.Module):
-    """One public model covering all five requested experimental baselines."""
+    """One public model covering the standard, legacy, and gated baselines."""
 
     def __init__(self, config: ModelConfig, baseline: str = "relational") -> None:
         super().__init__()
@@ -34,11 +36,17 @@ class NeuralCipherDecoder(nn.Module):
         self.config = config
         self.baseline = baseline
         self.is_relational = baseline != "standard"
+        self.is_gated_relational = baseline == "relational_gated"
         self.uses_pooling = baseline in {"relational_pool", "relational_match", "relational_sinkhorn"}
         self.uses_matching = baseline in {"relational_match", "relational_sinkhorn"}
         self.uses_sinkhorn = baseline == "relational_sinkhorn"
 
-        self.encoder = RelationalTransformer(config) if self.is_relational else BaselineTransformer(config)
+        if self.is_gated_relational:
+            self.encoder = GatedRelationalTransformer(config)
+        elif self.is_relational:
+            self.encoder = RelationalTransformer(config)
+        else:
+            self.encoder = BaselineTransformer(config)
         self.token_classifier = nn.Linear(config.d_model, config.num_zones)
         self.zone_pooling = ZonePooling(config.d_model, config.pooling) if self.uses_pooling else None
         self.zone_classifier = (
@@ -60,7 +68,12 @@ class NeuralCipherDecoder(nn.Module):
         cipher_zone_ids: Tensor | None = None,
         return_attention: bool = False,
     ) -> DecoderOutput:
-        if self.is_relational:
+        same_region_logits = None
+        if self.is_gated_relational:
+            hidden, attentions, same_region_logits = self.encoder(
+                digits, cipher_values, attention_mask, return_attention
+            )
+        elif self.is_relational:
             hidden, attentions = self.encoder(
                 digits, cipher_values, attention_mask, return_attention
             )
@@ -70,7 +83,12 @@ class NeuralCipherDecoder(nn.Module):
 
         if not self.uses_pooling:
             token_scores = self.token_classifier(hidden)
-            return DecoderOutput(token_scores, hidden, attentions=attentions)
+            return DecoderOutput(
+                token_scores,
+                hidden,
+                attentions=attentions,
+                same_region_logits=same_region_logits,
+            )
 
         if cipher_zone_ids is None:
             raise ValueError(f"baseline {self.baseline} requires cipher_zone_ids")
@@ -102,6 +120,7 @@ class NeuralCipherDecoder(nn.Module):
             raw_zone_scores=raw_zone_scores,
             pooled_zones=pooled,
             attentions=attentions,
+            same_region_logits=same_region_logits,
         )
 
     @staticmethod

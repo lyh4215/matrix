@@ -17,6 +17,7 @@ from ..data.dataset import CipherEpisodeDataset, collate_episodes
 from ..models.decoder import DecoderOutput, NeuralCipherDecoder
 from ..models.zone_pooling import pool_zone_targets
 from .assignment import maximum_weight_assignment
+from .same_region import SameRegionMetricAccumulator
 
 LENGTH_BUCKETS = ((1, 10, "1-10"), (11, 20, "11-20"), (21, 50, "21-50"), (51, None, "50+"))
 
@@ -67,6 +68,7 @@ def evaluate_model(
     supervised_loss_sum = 0.0
     supervised_loss_count = 0
     prediction_counts: Tensor | None = None
+    same_region_metrics = SameRegionMetricAccumulator()
 
     for original_batch in loader:
         batch = _to_device(original_batch, device)
@@ -76,6 +78,12 @@ def evaluate_model(
             attention_mask=batch["attention_mask"],
             cipher_zone_ids=batch["cipher_zone_ids"],
         )
+        if output.same_region_logits:
+            same_region_metrics.update(
+                output.same_region_logits[-1],
+                batch["cipher_zone_ids"],
+                batch["attention_mask"],
+            )
         mask = batch["attention_mask"]
         valid_scores = output.token_scores[mask]
         valid_targets = batch["zone_labels"][mask]
@@ -236,6 +244,8 @@ def evaluate_model(
         -(nonzero_probabilities * nonzero_probabilities.log()).sum()
     )
     metrics["max_predicted_class_fraction"] = float(prediction_probabilities.max())
+    if same_region_metrics.count:
+        metrics.update(same_region_metrics.compute())
     for k in (1, 3, 5):
         metrics[f"token_top_{k}_accuracy"] = token_top[k] / token_total
         metrics[f"zone_top_{k}_accuracy"] = zone_top[k] / max(zone_total, 1)
