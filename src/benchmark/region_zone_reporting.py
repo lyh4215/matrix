@@ -87,6 +87,26 @@ def _summary_markdown(payload: dict) -> str:
             "{token_accuracy:.4f} | {observed_exact_recovery_rate:.4f} | "
             "{full_exact_recovery_rate:.4f} |".format(**row)
         )
+    oracle_rows = [
+        row for row in payload["results"] if row["matcher"] == "oracle_transition"
+    ]
+    if oracle_rows:
+        lines.extend(
+            (
+                "",
+                "## Oracle optimization diagnostics",
+                "",
+                "| Length | Objective | Pred ≤ True | Mean Gap | Median Gap | Converged |",
+                "| ---: | --- | ---: | ---: | ---: | ---: |",
+            )
+        )
+        for row in oracle_rows:
+            lines.append(
+                "| {sequence_length} | {oracle_objective} | "
+                "{fraction_predicted_objective_le_true_objective:.4f} | "
+                "{mean_optimization_gap:.6f} | {median_optimization_gap:.6f} | "
+                "{oracle_convergence_rate:.4f} |".format(**row)
+            )
     lines.extend(("", "## Heuristic interpretation", ""))
     lines.extend(f"- {observation}" for observation in payload["heuristic_interpretation"])
     ambiguity = payload["canonical_identifiability"]

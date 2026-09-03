@@ -276,29 +276,74 @@ def matching_objective(
     canonical_transition: Tensor,
     assignment: Sequence[int],
     row_weights: Tensor | None = None,
+    objective: str = "mse",
+    transition_counts: Tensor | None = None,
+    epsilon: float = 1e-12,
 ) -> float:
-    permutation = torch.tensor(assignment, dtype=torch.long)
-    aligned = canonical_transition.to(torch.float64)[permutation][:, permutation]
-    difference = (observed_transition.to(torch.float64) - aligned).square().mean(dim=1)
-    weights = (
-        torch.ones_like(difference)
-        if row_weights is None
-        else row_weights.to(torch.float64)
+    permutation = torch.tensor(assignment, dtype=torch.long).unsqueeze(0)
+    return float(
+        _objective_values(
+            permutation,
+            observed_transition,
+            canonical_transition,
+            row_weights,
+            objective,
+            transition_counts,
+            epsilon,
+        )[0]
     )
-    return float((difference * weights).sum() / weights.sum().clamp_min(1e-12))
 
 
-def _signature_initialization(
+def _objective_values(
+    permutations: Tensor,
+    observed_transition: Tensor,
+    canonical_transition: Tensor,
+    row_weights: Tensor | None,
+    objective: str,
+    transition_counts: Tensor | None,
+    epsilon: float,
+) -> Tensor:
+    if objective not in {"mse", "count_nll"}:
+        raise ValueError("oracle objective must be mse or count_nll")
+    if epsilon <= 0:
+        raise ValueError("objective epsilon must be positive")
+    q = observed_transition.to(torch.float64)
+    p = canonical_transition.to(torch.float64)
+    permutations = permutations.to(device=p.device, dtype=torch.long)
+    aligned = p[
+        permutations.unsqueeze(2),
+        permutations.unsqueeze(1),
+    ]
+    weights = (
+        torch.ones(q.shape[0], dtype=torch.float64, device=q.device)
+        if row_weights is None
+        else row_weights.to(device=q.device, dtype=torch.float64)
+    )
+    if objective == "mse":
+        difference = (q.unsqueeze(0) - aligned).square().mean(dim=2)
+        return (difference * weights.unsqueeze(0)).sum(dim=1) / weights.sum().clamp_min(
+            1e-12
+        )
+    counts = (
+        q * weights.unsqueeze(1)
+        if transition_counts is None
+        else transition_counts.to(device=q.device, dtype=torch.float64)
+    )
+    return -(
+        counts.unsqueeze(0) * aligned.clamp_min(epsilon).log()
+    ).sum(dim=(1, 2))
+
+
+def _signature_cost_matrix(
     observed_transition: Tensor,
     canonical_transition: Tensor,
     observed_frequency: Tensor | None,
-) -> list[int]:
+) -> Tensor:
     observed = transition_node_signatures(observed_transition, observed_frequency)
     canonical = transition_node_signatures(canonical_transition)
     combined = torch.cat((observed, canonical), dim=0)
     scale = combined.std(dim=0, unbiased=False).clamp_min(1e-6)
-    cost = ((observed.unsqueeze(1) - canonical.unsqueeze(0)) / scale).square().mean(-1)
-    return maximum_weight_assignment(-cost)
+    return ((observed.unsqueeze(1) - canonical.unsqueeze(0)) / scale).square().mean(-1)
 
 
 def _structural_assignment_cost(
@@ -306,27 +351,349 @@ def _structural_assignment_cost(
     canonical_transition: Tensor,
     current: Sequence[int],
     row_weights: Tensor,
+    objective: str,
+    transition_counts: Tensor | None,
+    epsilon: float,
 ) -> Tensor:
-    num_zones = observed_transition.shape[0]
-    current_index = torch.tensor(current, dtype=torch.long)
     q = observed_transition.to(torch.float64)
     p = canonical_transition.to(torch.float64)
+    current_index = torch.tensor(current, dtype=torch.long, device=q.device)
+    diagonal_mask = torch.eye(q.shape[0], dtype=torch.bool, device=q.device)
+    if objective == "count_nll":
+        counts = (
+            q * row_weights.to(torch.float64).unsqueeze(1)
+            if transition_counts is None
+            else transition_counts.to(torch.float64)
+        )
+        off_diagonal = counts.masked_fill(diagonal_mask, 0.0)
+        log_p = p.clamp_min(epsilon).log()
+        outgoing = -(off_diagonal @ log_p[:, current_index].t())
+        incoming = -(off_diagonal.t() @ log_p[current_index])
+        self_cost = -counts.diag().unsqueeze(1) * log_p.diag().unsqueeze(0)
+        return 0.5 * (outgoing + incoming) + self_cost
+    if objective != "mse":
+        raise ValueError("oracle objective must be mse or count_nll")
     weights = row_weights.to(torch.float64)
-    result = torch.empty(num_zones, num_zones, dtype=torch.float64)
-    for anonymous in range(num_zones):
-        for semantic in range(num_zones):
-            outgoing_expected = p[semantic, current_index].clone()
-            incoming_expected = p[current_index, semantic].clone()
-            outgoing_expected[anonymous] = p[semantic, semantic]
-            incoming_expected[anonymous] = p[semantic, semantic]
-            outgoing = weights[anonymous] * (
-                q[anonymous] - outgoing_expected
-            ).square().mean()
-            incoming = (
-                weights * (q[:, anonymous] - incoming_expected).square()
-            ).sum() / weights.sum().clamp_min(1e-12)
-            result[anonymous, semantic] = outgoing + incoming
-    return result
+    off_diagonal = (~diagonal_mask).to(torch.float64)
+    outgoing_difference = q.unsqueeze(1) - p[:, current_index].unsqueeze(0)
+    outgoing = (
+        outgoing_difference.square() * off_diagonal.unsqueeze(1)
+    ).sum(dim=2) / q.shape[0]
+    outgoing = outgoing * weights.unsqueeze(1)
+    incoming_difference = q.t().unsqueeze(1) - p[current_index].t().unsqueeze(0)
+    incoming = (
+        incoming_difference.square()
+        * off_diagonal.unsqueeze(1)
+        * weights.view(1, 1, -1)
+    ).sum(dim=2) / weights.sum().clamp_min(1e-12)
+    self_difference = (q.diag().unsqueeze(1) - p.diag().unsqueeze(0)).square()
+    self_scale = weights.unsqueeze(1) * (
+        0.5 / q.shape[0] + 0.5 / weights.sum().clamp_min(1e-12)
+    )
+    return 0.5 * (outgoing + incoming) + self_scale * self_difference
+
+
+def _initial_assignments(
+    observed_transition: Tensor,
+    canonical_transition: Tensor,
+    observed_frequency: Tensor | None,
+    row_weights: Tensor,
+    objective: str,
+    transition_counts: Tensor | None,
+    epsilon: float,
+    restarts: int,
+    seed: int,
+) -> list[list[int]]:
+    signature_cost = _signature_cost_matrix(
+        observed_transition, canonical_transition, observed_frequency
+    )
+    frequency = (
+        stationary_distribution(observed_transition)
+        if observed_frequency is None
+        else observed_frequency
+    )
+    signature = maximum_weight_assignment(-signature_cost)
+    frequency_match = list(
+        frequency_assignment(
+            frequency, stationary_distribution(canonical_transition)
+        )
+    )
+    candidates = [signature, frequency_match]
+    if objective == "count_nll":
+        counts = (
+            observed_transition.to(torch.float64)
+            * row_weights.to(torch.float64).unsqueeze(1)
+            if transition_counts is None
+            else transition_counts.to(torch.float64)
+        )
+        candidates.extend(
+            (
+                _faq_initialization(
+                    counts, canonical_transition, signature, epsilon
+                ),
+                _faq_initialization(
+                    counts, canonical_transition, frequency_match, epsilon
+                ),
+            )
+        )
+    generator = torch.Generator().manual_seed(seed)
+    base_noise_scale = max(float(signature_cost.std(unbiased=False)), 1e-6)
+    for restart in range(max(restarts - 1, 0)):
+        noise = torch.randn(
+            signature_cost.shape, generator=generator, dtype=signature_cost.dtype
+        )
+        candidates.append(
+            maximum_weight_assignment(
+                -(signature_cost + base_noise_scale * (0.2 + 0.1 * restart) * noise)
+            )
+        )
+    random_candidate = list(range(observed_transition.shape[0]))
+    random.Random(seed).shuffle(random_candidate)
+    candidates.append(random_candidate)
+    unique: list[list[int]] = []
+    for candidate in candidates:
+        if candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
+def _faq_initialization(
+    transition_counts: Tensor,
+    canonical_transition: Tensor,
+    initial_assignment: Sequence[int],
+    epsilon: float,
+    iterations: int = 30,
+) -> list[int]:
+    """Frank-Wolfe FAQ relaxation used only to seed discrete local search."""
+    counts = transition_counts.to(torch.float64)
+    pair_cost = -canonical_transition.to(torch.float64).clamp_min(epsilon).log()
+    num_zones = counts.shape[0]
+    permutation = torch.zeros(num_zones, num_zones, dtype=torch.float64)
+    permutation[
+        torch.arange(num_zones), torch.tensor(initial_assignment, dtype=torch.long)
+    ] = 1.0
+    uniform = torch.full_like(permutation, 1.0 / num_zones)
+    relaxed = 0.5 * permutation + 0.5 * uniform
+
+    def relaxed_objective(matrix: Tensor) -> Tensor:
+        return (counts * (matrix @ pair_cost @ matrix.t())).sum()
+
+    for _ in range(iterations):
+        gradient = (
+            counts @ relaxed @ pair_cost.t()
+            + counts.t() @ relaxed @ pair_cost
+        )
+        direction_assignment = maximum_weight_assignment(-gradient)
+        endpoint = torch.zeros_like(relaxed)
+        endpoint[
+            torch.arange(num_zones),
+            torch.tensor(direction_assignment, dtype=torch.long),
+        ] = 1.0
+        direction = endpoint - relaxed
+        quadratic = (counts * (direction @ pair_cost @ direction.t())).sum()
+        linear = (
+            counts
+            * (
+                direction @ pair_cost @ relaxed.t()
+                + relaxed @ pair_cost @ direction.t()
+            )
+        ).sum()
+        if float(quadratic) > 0:
+            step = float((-linear / (2.0 * quadratic)).clamp(0.0, 1.0))
+        else:
+            step = (
+                1.0
+                if float(relaxed_objective(endpoint))
+                < float(relaxed_objective(relaxed))
+                else 0.0
+            )
+        if step <= 1e-10:
+            break
+        relaxed = relaxed + step * direction
+    return maximum_weight_assignment(relaxed)
+
+
+def _swap_candidates(current: Tensor) -> Tensor:
+    pairs = torch.triu_indices(
+        len(current), len(current), offset=1, device=current.device
+    )
+    candidates = current.unsqueeze(0).expand(pairs.shape[1], -1).clone()
+    rows = torch.arange(pairs.shape[1], device=current.device)
+    candidates[rows, pairs[0]] = current[pairs[1]]
+    candidates[rows, pairs[1]] = current[pairs[0]]
+    return candidates
+
+
+def _three_cycle_candidates(current: Tensor) -> Tensor:
+    triples = torch.combinations(
+        torch.arange(len(current), device=current.device), r=3
+    )
+    candidates = current.unsqueeze(0).expand(2 * len(triples), -1).clone()
+    for offset, direction in ((0, (1, 2, 0)), (len(triples), (2, 0, 1))):
+        rows = torch.arange(len(triples), device=current.device) + offset
+        for target, source in enumerate(direction):
+            candidates[rows, triples[:, target]] = current[triples[:, source]]
+    return candidates
+
+
+def _double_swap_candidates(current: Tensor) -> Tensor:
+    quadruples = torch.combinations(
+        torch.arange(len(current), device=current.device), r=4
+    )
+    pairings = ((1, 0, 3, 2), (2, 3, 0, 1), (3, 2, 1, 0))
+    candidates = current.unsqueeze(0).expand(len(pairings) * len(quadruples), -1).clone()
+    for pairing_index, sources in enumerate(pairings):
+        rows = (
+            torch.arange(len(quadruples), device=current.device)
+            + pairing_index * len(quadruples)
+        )
+        for target, source in enumerate(sources):
+            candidates[rows, quadruples[:, target]] = current[quadruples[:, source]]
+    return candidates
+
+
+def _best_candidate(
+    candidates: Tensor,
+    current: Tensor,
+    current_objective: float,
+    observed_transition: Tensor,
+    canonical_transition: Tensor,
+    row_weights: Tensor,
+    objective: str,
+    transition_counts: Tensor | None,
+    epsilon: float,
+) -> tuple[Tensor, float]:
+    if objective == "count_nll":
+        counts = (
+            observed_transition.to(torch.float64)
+            * row_weights.to(torch.float64).unsqueeze(1)
+            if transition_counts is None
+            else transition_counts.to(torch.float64)
+        )
+        objectives = _count_nll_candidate_objectives_from_delta(
+            candidates,
+            current,
+            current_objective,
+            counts,
+            canonical_transition,
+            epsilon,
+        )
+    else:
+        objectives = _objective_values(
+            candidates,
+            observed_transition,
+            canonical_transition,
+            row_weights,
+            objective,
+            transition_counts,
+            epsilon,
+        )
+    best = int(objectives.argmin())
+    return candidates[best], float(objectives[best])
+
+
+def _count_nll_candidate_objectives_from_delta(
+    candidates: Tensor,
+    current: Tensor,
+    current_objective: float,
+    transition_counts: Tensor,
+    canonical_transition: Tensor,
+    epsilon: float,
+) -> Tensor:
+    """Score fixed-size permutation moves from only their changed rows/columns."""
+    candidates = candidates.to(torch.long)
+    current = current.to(torch.long)
+    changed_mask = candidates.ne(current.unsqueeze(0))
+    changed_counts = changed_mask.sum(dim=1)
+    if not bool((changed_counts == changed_counts[0]).all()) or int(changed_counts[0]) == 0:
+        raise ValueError("delta scoring requires equally sized non-empty permutation moves")
+    batch = candidates.shape[0]
+    changed = changed_mask.nonzero(as_tuple=False)[:, 1].view(batch, -1)
+    changed_semantic = candidates.gather(1, changed)
+    pair_cost = -canonical_transition.to(torch.float64).clamp_min(epsilon).log()
+    counts = transition_counts.to(torch.float64)
+
+    # All edges leaving changed nodes, including edges within the changed set.
+    outgoing_counts = counts[changed]
+    old_outgoing_cost = pair_cost[
+        current[changed].unsqueeze(2), current.view(1, 1, -1)
+    ]
+    new_outgoing_cost = pair_cost[
+        changed_semantic.unsqueeze(2), candidates.unsqueeze(1)
+    ]
+    outgoing_delta = (
+        outgoing_counts * (new_outgoing_cost - old_outgoing_cost)
+    ).sum(dim=(1, 2))
+
+    # Incoming edges from unchanged sources. Incoming edges from changed
+    # sources were already included above, so the two terms never double count.
+    incoming_counts = counts.t()[changed]
+    old_incoming_cost = pair_cost[
+        current.view(1, 1, -1), current[changed].unsqueeze(2)
+    ]
+    new_incoming_cost = pair_cost[
+        candidates.unsqueeze(1), changed_semantic.unsqueeze(2)
+    ]
+    unchanged_sources = (~changed_mask).unsqueeze(1)
+    incoming_delta = (
+        incoming_counts
+        * (new_incoming_cost - old_incoming_cost)
+        * unchanged_sources
+    ).sum(dim=(1, 2))
+    return candidates.new_full(
+        (batch,), current_objective, dtype=torch.float64
+    ) + outgoing_delta + incoming_delta
+
+
+def _pair_cycle_descent(
+    current: Tensor,
+    current_objective: float,
+    observed_transition: Tensor,
+    canonical_transition: Tensor,
+    row_weights: Tensor,
+    objective_name: str,
+    transition_counts: Tensor | None,
+    epsilon: float,
+    max_iterations: int,
+) -> tuple[Tensor, float, int, bool]:
+    moves = 0
+    for _ in range(max_iterations):
+        swap, swap_objective = _best_candidate(
+            _swap_candidates(current),
+            current,
+            current_objective,
+            observed_transition,
+            canonical_transition,
+            row_weights,
+            objective_name,
+            transition_counts,
+            epsilon,
+        )
+        tolerance = 1e-12 * max(1.0, abs(current_objective))
+        if swap_objective < current_objective - tolerance:
+            current = swap
+            current_objective = swap_objective
+            moves += 1
+            continue
+        if len(current) >= 3:
+            cycle, cycle_objective = _best_candidate(
+                _three_cycle_candidates(current),
+                current,
+                current_objective,
+                observed_transition,
+                canonical_transition,
+                row_weights,
+                objective_name,
+                transition_counts,
+                epsilon,
+            )
+            if cycle_objective < current_objective - tolerance:
+                current = cycle
+                current_objective = cycle_objective
+                moves += 1
+                continue
+        return current, current_objective, moves, True
+    return current, current_objective, moves, False
 
 
 def oracle_transition_assignment(
@@ -337,27 +704,35 @@ def oracle_transition_assignment(
     max_iterations: int = 50,
     restarts: int = 4,
     seed: int = 0,
+    objective: str = "count_nll",
+    transition_counts: Tensor | None = None,
+    epsilon: float = 1e-12,
 ) -> OracleMatchResult:
     """Approximate graph matching without enumerating the 19! permutations."""
     if observed_transition.shape != canonical_transition.shape:
         raise ValueError("observed and canonical transitions must have matching shape")
     if max_iterations < 1 or restarts < 1:
         raise ValueError("oracle iterations and restarts must be positive")
+    if objective not in {"mse", "count_nll"}:
+        raise ValueError("oracle objective must be mse or count_nll")
+    objective_name = objective
     num_zones = observed_transition.shape[0]
     weights = (
         torch.ones(num_zones, dtype=torch.float64)
         if row_weights is None
         else row_weights.to(torch.float64)
     )
-    signature_start = _signature_initialization(
-        observed_transition, canonical_transition, observed_frequency
+    starts = _initial_assignments(
+        observed_transition,
+        canonical_transition,
+        observed_frequency,
+        weights,
+        objective_name,
+        transition_counts,
+        epsilon,
+        restarts,
+        seed,
     )
-    rng = random.Random(seed)
-    starts = [signature_start]
-    for _ in range(restarts - 1):
-        candidate = list(range(num_zones))
-        rng.shuffle(candidate)
-        starts.append(candidate)
 
     best_assignment: list[int] | None = None
     best_objective = math.inf
@@ -365,8 +740,14 @@ def oracle_transition_assignment(
     best_converged = False
     for start in starts:
         current = list(start)
-        objective = matching_objective(
-            observed_transition, canonical_transition, current, weights
+        current_objective = matching_objective(
+            observed_transition,
+            canonical_transition,
+            current,
+            weights,
+            objective=objective_name,
+            transition_counts=transition_counts,
+            epsilon=epsilon,
         )
         iterations = 0
         converged = False
@@ -374,45 +755,89 @@ def oracle_transition_assignment(
             iterations += 1
             proposal = maximum_weight_assignment(
                 -_structural_assignment_cost(
-                    observed_transition, canonical_transition, current, weights
+                    observed_transition,
+                    canonical_transition,
+                    current,
+                    weights,
+                    objective_name,
+                    transition_counts,
+                    epsilon,
                 )
             )
             proposal_objective = matching_objective(
-                observed_transition, canonical_transition, proposal, weights
+                observed_transition,
+                canonical_transition,
+                proposal,
+                weights,
+                objective=objective_name,
+                transition_counts=transition_counts,
+                epsilon=epsilon,
             )
-            if proposal == current or proposal_objective >= objective - 1e-14:
-                converged = True
+            tolerance = 1e-12 * max(1.0, abs(current_objective))
+            if (
+                proposal == current
+                or proposal_objective >= current_objective - tolerance
+            ):
                 break
             current = proposal
-            objective = proposal_objective
+            current_objective = proposal_objective
 
-        # Pair-swap descent catches improvements that a simultaneous Hungarian
-        # update can miss while remaining tiny for a 19-node graph.
-        for _ in range(max_iterations):
-            best_swap: tuple[int, int] | None = None
-            swap_objective = objective
-            for left in range(num_zones):
-                for right in range(left + 1, num_zones):
-                    proposal = current.copy()
-                    proposal[left], proposal[right] = proposal[right], proposal[left]
-                    candidate_objective = matching_objective(
-                        observed_transition, canonical_transition, proposal, weights
-                    )
-                    if candidate_objective < swap_objective - 1e-14:
-                        best_swap = (left, right)
-                        swap_objective = candidate_objective
-            if best_swap is None:
-                converged = True
-                break
-            current[best_swap[0]], current[best_swap[1]] = (
-                current[best_swap[1]],
-                current[best_swap[0]],
+        current_tensor, current_objective, local_moves, converged = (
+            _pair_cycle_descent(
+                torch.tensor(current, dtype=torch.long),
+                current_objective,
+                observed_transition,
+                canonical_transition,
+                weights,
+                objective_name,
+                transition_counts,
+                epsilon,
+                max_iterations,
             )
-            objective = swap_objective
-            iterations += 1
-        if objective < best_objective:
+        )
+        iterations += local_moves
+
+        # Evaluate the larger 4-node neighborhood only after the cheaper
+        # pair/3-cycle descent. Each successful escape is locally refined again.
+        if num_zones >= 4:
+            for _ in range(max_iterations):
+                double_swap, double_swap_objective = _best_candidate(
+                    _double_swap_candidates(current_tensor),
+                    current_tensor,
+                    current_objective,
+                    observed_transition,
+                    canonical_transition,
+                    weights,
+                    objective_name,
+                    transition_counts,
+                    epsilon,
+                )
+                tolerance = 1e-12 * max(1.0, abs(current_objective))
+                if double_swap_objective >= current_objective - tolerance:
+                    break
+                current_tensor = double_swap
+                current_objective = double_swap_objective
+                iterations += 1
+                current_tensor, current_objective, moves, converged = (
+                    _pair_cycle_descent(
+                        current_tensor,
+                        current_objective,
+                        observed_transition,
+                        canonical_transition,
+                        weights,
+                        objective_name,
+                        transition_counts,
+                        epsilon,
+                        max_iterations,
+                    )
+                )
+                iterations += moves
+            else:
+                converged = False
+        current = current_tensor.tolist()
+        if current_objective < best_objective:
             best_assignment = current
-            best_objective = objective
+            best_objective = current_objective
             best_iterations = iterations
             best_converged = converged
     assert best_assignment is not None

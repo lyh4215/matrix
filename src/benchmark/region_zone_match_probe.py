@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import statistics
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -42,12 +43,18 @@ from .sanity_overfit import print_environment
 @dataclass
 class OracleMatcherConfig:
     alpha: float = 1e-3
+    objective: str = "count_nll"
+    epsilon: float = 1e-12
     max_iterations: int = 50
     restarts: int = 4
 
     def validate(self) -> None:
         if self.alpha < 0:
             raise ValueError("oracle alpha must be non-negative")
+        if self.objective not in {"mse", "count_nll"}:
+            raise ValueError("oracle objective must be mse or count_nll")
+        if self.epsilon <= 0:
+            raise ValueError("oracle epsilon must be positive")
         if self.max_iterations < 1 or self.restarts < 1:
             raise ValueError("oracle iterations and restarts must be positive")
 
@@ -187,8 +194,10 @@ def _evaluate_graphs(
         result for result in table_results if "predicted_objective" in result
     ]
     if objective_rows:
+        gaps = [result["optimization_gap_to_true"] for result in objective_rows]
         aggregate.update(
             {
+                "oracle_objective": objective_rows[0]["objective_name"],
                 "mean_predicted_objective": sum(
                     result["predicted_objective"] for result in objective_rows
                 )
@@ -205,6 +214,14 @@ def _evaluate_graphs(
                     result["iterations"] for result in objective_rows
                 )
                 / len(objective_rows),
+                "fraction_predicted_objective_le_true_objective": sum(
+                    result["predicted_objective"]
+                    <= result["true_permutation_objective"] + 1e-9
+                    for result in objective_rows
+                )
+                / len(objective_rows),
+                "mean_optimization_gap": statistics.mean(gaps),
+                "median_optimization_gap": statistics.median(gaps),
             }
         )
     return {
@@ -242,17 +259,31 @@ def _run_nonlearned(
                 config.oracle.max_iterations,
                 config.oracle.restarts,
                 config.seed + graph.sequence_length * 100_003 + index,
+                objective=config.oracle.objective,
+                transition_counts=graph.transition_counts,
+                epsilon=config.oracle.epsilon,
             )
             true_objective = matching_objective(
                 graph.transition_matrix,
                 canonical_transition,
                 graph.true_zone_by_anonymous_region.tolist(),
                 _row_weights(graph),
+                objective=config.oracle.objective,
+                transition_counts=graph.transition_counts,
+                epsilon=config.oracle.epsilon,
+            )
+            true_aligned_mse = matching_objective(
+                graph.transition_matrix,
+                canonical_transition,
+                graph.true_zone_by_anonymous_region.tolist(),
+                _row_weights(graph),
+                objective="mse",
             )
             return result.assignment, {
+                "objective_name": config.oracle.objective,
                 "predicted_objective": result.objective,
                 "true_permutation_objective": true_objective,
-                "true_aligned_transition_mse": true_objective,
+                "true_aligned_transition_mse": true_aligned_mse,
                 "iterations": result.iterations,
                 "converged": result.converged,
                 "optimization_gap_to_true": result.objective - true_objective,
@@ -564,6 +595,7 @@ def main() -> None:
     parser.add_argument("--test-tables", type=int)
     parser.add_argument("--sequence-lengths", nargs="+", type=int)
     parser.add_argument("--sequences-per-table", type=int)
+    parser.add_argument("--oracle-objective", choices=("mse", "count_nll"))
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--seed", type=int)
@@ -584,6 +616,8 @@ def main() -> None:
         config.synthetic.sequence_lengths = tuple(args.sequence_lengths)
     if args.sequences_per_table is not None:
         config.synthetic.sequences_per_length = args.sequences_per_table
+    if args.oracle_objective is not None:
+        config.oracle.objective = args.oracle_objective
     if args.epochs is not None:
         config.learned.epochs = args.epochs
     if args.batch_size is not None:

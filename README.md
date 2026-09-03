@@ -279,3 +279,8 @@ oracle table diagnostics, learned history/checkpoint, length curve와 confusion 
 저장됩니다. Observed/full assignment accuracy, token reconstruction accuracy, coverage,
 exact recovery, empirical-Q true-alignment objective와 canonical signature ambiguity를 함께
 기록합니다.
+
+Oracle 기본 objective는 empirical transition count likelihood인 `count_nll`이며,
+`--oracle-objective mse`로 기존 row-normalized MSE를 선택할 수 있습니다. Summary에는
+predicted/true-permutation objective와 gap의 mean/median, predicted objective가 true 이하인
+table 비율이 포함됩니다.

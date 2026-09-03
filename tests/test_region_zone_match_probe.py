@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import itertools
+
 import torch
 
 from src.benchmark.region_zone_match_probe import load_region_zone_probe_config
 from src.benchmark.region_zone_matching import (
+    _count_nll_candidate_objectives_from_delta,
+    _swap_candidates,
     anonymize_region_sequences,
     build_anonymous_region_graph,
     frequency_assignment,
     graph_node_features,
+    matching_objective,
     oracle_transition_assignment,
     row_normalize_transition_counts,
     score_region_assignment,
@@ -68,7 +73,95 @@ def test_oracle_recovers_an_exactly_permuted_canonical_transition() -> None:
         seed=2,
     )
     assert result.assignment == tuple(true_assignment.tolist())
-    assert result.objective == 0.0
+    expected_objective = matching_objective(
+        observed,
+        canonical,
+        true_assignment.tolist(),
+        torch.ones(7),
+        objective="count_nll",
+    )
+    assert abs(result.objective - expected_objective) < 1e-12
+
+
+def test_count_nll_true_permutation_is_exact_case_global_optimum() -> None:
+    canonical = _canonical_transition(5)
+    true_assignment = torch.tensor([3, 0, 4, 1, 2])
+    semantic_counts = (
+        10_000
+        * stationary_distribution(canonical).unsqueeze(1)
+        * canonical
+    )
+    observed_counts = semantic_counts[true_assignment][:, true_assignment]
+    observed = observed_counts / observed_counts.sum(dim=1, keepdim=True)
+    objectives = {
+        permutation: matching_objective(
+            observed,
+            canonical,
+            permutation,
+            observed_counts.sum(dim=1),
+            objective="count_nll",
+            transition_counts=observed_counts,
+        )
+        for permutation in itertools.permutations(range(5))
+    }
+    truth = tuple(true_assignment.tolist())
+    assert objectives[truth] == min(objectives.values())
+    result = oracle_transition_assignment(
+        observed,
+        canonical,
+        stationary_distribution(observed),
+        observed_counts.sum(dim=1),
+        max_iterations=30,
+        restarts=3,
+        seed=5,
+        objective="count_nll",
+        transition_counts=observed_counts,
+    )
+    assert result.assignment == truth
+
+
+def test_vectorized_count_nll_move_delta_matches_full_objective() -> None:
+    canonical = _canonical_transition(6)
+    counts = torch.tensor(
+        [
+            [3, 1, 0, 2, 0, 1],
+            [0, 4, 2, 0, 1, 0],
+            [1, 0, 3, 1, 2, 0],
+            [0, 2, 1, 5, 0, 1],
+            [2, 0, 0, 1, 4, 1],
+            [0, 1, 2, 0, 1, 3],
+        ],
+        dtype=torch.float64,
+    )
+    observed = counts / counts.sum(dim=1, keepdim=True)
+    current = torch.tensor([2, 5, 1, 4, 0, 3])
+    current_objective = matching_objective(
+        observed,
+        canonical,
+        current.tolist(),
+        counts.sum(dim=1),
+        objective="count_nll",
+        transition_counts=counts,
+    )
+    candidates = _swap_candidates(current)
+    delta_values = _count_nll_candidate_objectives_from_delta(
+        candidates, current, current_objective, counts, canonical, 1e-12
+    )
+    full_values = torch.tensor(
+        [
+            matching_objective(
+                observed,
+                canonical,
+                candidate.tolist(),
+                counts.sum(dim=1),
+                objective="count_nll",
+                transition_counts=counts,
+            )
+            for candidate in candidates
+        ],
+        dtype=torch.float64,
+    )
+    assert torch.allclose(delta_values, full_values, atol=1e-10)
 
 
 def test_oracle_assignment_is_equivariant_to_anonymous_row_reindexing() -> None:
@@ -163,5 +256,6 @@ def test_graph_features_have_no_numeric_cipher_input_dimension() -> None:
 def test_region_zone_probe_config_has_requested_defaults() -> None:
     config = load_region_zone_probe_config("configs/region_zone_match_probe.yaml")
     assert config.matchers == ("random", "frequency", "oracle_transition", "learned")
+    assert config.oracle.objective == "count_nll"
     assert config.synthetic.sequence_lengths == (128,)
     assert config.synthetic.sequences_per_length == 1
