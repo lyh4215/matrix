@@ -1,0 +1,48 @@
+seed: 42
+matchers:
+  - random
+  - frequency
+  - oracle_transition
+  - learned
+output_dir: artifacts/region_zone_match_probe
+
+synthetic:
+  num_zones: 19
+  num_digits: 4
+  train_tables: 200
+  validation_tables: 50
+  test_tables: 100
+  ood_test_tables: 1
+  sequence_lengths: [128]
+  sequences_per_length: 1
+  plaintext_symbols_per_zone: 64
+  region_width: 128
+  locality_noise: 0.1
+  allow_cipher_collisions: false
+  noise_levels: [0.1]
+  region_gap_min: 32
+  region_gap_max: 96
+  iid_value_min: 0
+  iid_value_max: 4500
+  ood_value_min: 5500
+  ood_value_max: 10000
+  preferred_transitions: 3
+  transition_strength: 8.0
+  language_seed: 1729
+
+oracle:
+  alpha: 0.001
+  max_iterations: 50
+  restarts: 4
+
+learned:
+  d_model: 64
+  num_layers: 3
+  dropout: 0.1
+  sinkhorn_iterations: 30
+  sinkhorn_temperature: 1.0
+  epochs: 50
+  batch_size: 8
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  device: auto

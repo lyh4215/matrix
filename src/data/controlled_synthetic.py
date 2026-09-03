@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
 from .dataset import CipherEpisode
@@ -265,6 +265,9 @@ class ControlledBenchmarkBundle:
     ood_test: list[CipherEpisode]
     iid_by_length: dict[int, list[CipherEpisode]]
     iid_by_noise: dict[float, list[CipherEpisode]]
+    # Evaluation-only metadata. Models never receive this mapping; it allows
+    # permutation probes to score even regions absent from sampled episodes.
+    table_zone_to_region: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
     @property
     def train_table_ids(self) -> set[str]:
@@ -453,6 +456,10 @@ def generate_controlled_benchmark(
         ood_test,
         iid_by_length,
         iid_by_noise,
+        {
+            table.table_id: table.zone_to_region
+            for table in train_tables + validation_tables + iid_tables + ood_tables
+        },
     )
 
 

@@ -61,6 +61,11 @@ def test_controlled_bundle_has_shared_language_and_disjoint_numeric_ood() -> Non
     ]
     assert all(abs(sum(row) - 1.0) < 1e-10 for row in bundle.transition_matrix)
     assert all(max(row) > 2 * min(row) for row in bundle.transition_matrix)
+    assert len(bundle.table_zone_to_region) == 5
+    assert all(
+        sorted(permutation) == list(range(config.num_zones))
+        for permutation in bundle.table_zone_to_region.values()
+    )
 
 
 def test_zero_noise_preserves_intra_zone_symbol_geometry() -> None:

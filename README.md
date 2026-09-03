@@ -231,3 +231,51 @@ python learning_curve.py \
   --epochs 100 \
   --output-dir artifacts/learning_curve_gated_50f
 ```
+
+## Oracle region-to-zone matching probe
+
+`region_zone_match_probe.py`는 synthetic generator의 true numeric-region grouping만
+oracle로 사용하고, 각 table의 region을 first-occurrence 순서로 다시 익명화합니다.
+Matcher 입력은 anonymous transition graph와 frequency뿐이며 cipher value, digit,
+numeric region 순서는 사용하지 않습니다. Generator가 반환한 공통 Markov transition
+matrix를 canonical semantic structure로 직접 재사용합니다.
+
+128-token oracle transition matching:
+
+```bash
+python region_zone_match_probe.py \
+  --matchers oracle_transition \
+  --sequence-lengths 128 \
+  --test-tables 200 \
+  --seed 42
+```
+
+Sequence-length study:
+
+```bash
+python region_zone_match_probe.py \
+  --matchers oracle_transition \
+  --sequence-lengths 64 128 256 512 \
+  --test-tables 200 \
+  --seed 42
+```
+
+Permutation-equivariant graph matcher 학습:
+
+```bash
+python region_zone_match_probe.py \
+  --matchers learned \
+  --train-tables 1600 \
+  --validation-tables 100 \
+  --test-tables 200 \
+  --sequence-lengths 128 \
+  --epochs 50 \
+  --seed 42
+```
+
+한 table에서 합칠 sequence 수는 `--sequences-per-table N`으로 조절합니다. 결과는
+기본적으로 `artifacts/region_zone_match_probe/`에 raw/summary JSON과 Markdown,
+oracle table diagnostics, learned history/checkpoint, length curve와 confusion matrix로
+저장됩니다. Observed/full assignment accuracy, token reconstruction accuracy, coverage,
+exact recovery, empirical-Q true-alignment objective와 canonical signature ambiguity를 함께
+기록합니다.
