@@ -172,6 +172,39 @@ def _finish_assignment(
     return tuple(result)
 
 
+def _optimization_group_metrics(table_results: Sequence[dict]) -> dict:
+    if not table_results:
+        return {
+            "num_tables": 0,
+            "observed_assignment_accuracy": None,
+            "token_accuracy": None,
+            "observed_exact_recovery_rate": None,
+            "mean_optimization_gap": None,
+            "median_optimization_gap": None,
+        }
+    observed_total = sum(
+        int(result["num_observed_regions"]) for result in table_results
+    )
+    observed_correct = sum(
+        float(result["observed_region_assignment_accuracy"])
+        * int(result["num_observed_regions"])
+        for result in table_results
+    )
+    gaps = [float(result["optimization_gap_to_true"]) for result in table_results]
+    return {
+        "num_tables": len(table_results),
+        "observed_assignment_accuracy": observed_correct / max(observed_total, 1),
+        "token_accuracy": statistics.mean(
+            float(result["token_accuracy"]) for result in table_results
+        ),
+        "observed_exact_recovery_rate": statistics.mean(
+            float(result["observed_exact_recovery"]) for result in table_results
+        ),
+        "mean_optimization_gap": statistics.mean(gaps),
+        "median_optimization_gap": statistics.median(gaps),
+    }
+
+
 def _evaluate_graphs(
     matcher: str,
     graphs: Sequence[AnonymousRegionGraph],
@@ -185,16 +218,25 @@ def _evaluate_graphs(
         scored.update(diagnostics)
         table_results.append(scored)
     aggregate = aggregate_assignment_results(table_results, num_zones)
-    for result in table_results:
-        # Confusions are retained once in the aggregate, not repeated for every
-        # table in raw_results.json.
-        result.pop("assignment_confusion")
-        result.pop("token_confusion")
     objective_rows = [
         result for result in table_results if "predicted_objective" in result
     ]
     if objective_rows:
         gaps = [result["optimization_gap_to_true"] for result in objective_rows]
+        optimization_success = [
+            result
+            for result in objective_rows
+            if result["predicted_objective"]
+            <= result["true_permutation_objective"] + 1e-9
+        ]
+        optimization_failure = [
+            result
+            for result in objective_rows
+            if not (
+                result["predicted_objective"]
+                <= result["true_permutation_objective"] + 1e-9
+            )
+        ]
         aggregate.update(
             {
                 "oracle_objective": objective_rows[0]["objective_name"],
@@ -222,8 +264,21 @@ def _evaluate_graphs(
                 / len(objective_rows),
                 "mean_optimization_gap": statistics.mean(gaps),
                 "median_optimization_gap": statistics.median(gaps),
+                "optimization_groups": {
+                    "optimization_success": _optimization_group_metrics(
+                        optimization_success
+                    ),
+                    "optimization_failure": _optimization_group_metrics(
+                        optimization_failure
+                    ),
+                },
             }
         )
+    for result in table_results:
+        # Confusions are retained once in the aggregate, not repeated for every
+        # table in raw_results.json.
+        result.pop("assignment_confusion")
+        result.pop("token_confusion")
     return {
         "matcher": matcher,
         "sequence_length": graphs[0].sequence_length,
@@ -490,21 +545,22 @@ def run_region_zone_match_probe(config: RegionZoneProbeConfig) -> dict:
         )
         results.extend(matcher_results)
         for result in matcher_results:
+            stdout_result = {
+                "matcher": matcher,
+                "sequence_length": result["sequence_length"],
+                "observed_assignment_accuracy": result[
+                    "observed_region_assignment_accuracy"
+                ],
+                "token_accuracy": result["token_accuracy"],
+                "exact_recovery_rate": result["observed_exact_recovery_rate"],
+                "mean_region_coverage": result["mean_region_coverage"],
+            }
+            if "optimization_groups" in result:
+                stdout_result["optimization_groups"] = result[
+                    "optimization_groups"
+                ]
             print(
-                json.dumps(
-                    {
-                        "matcher": matcher,
-                        "sequence_length": result["sequence_length"],
-                        "observed_assignment_accuracy": result[
-                            "observed_region_assignment_accuracy"
-                        ],
-                        "token_accuracy": result["token_accuracy"],
-                        "exact_recovery_rate": result[
-                            "observed_exact_recovery_rate"
-                        ],
-                        "mean_region_coverage": result["mean_region_coverage"],
-                    }
-                ),
+                json.dumps(stdout_result),
                 flush=True,
             )
     learned_history: list[dict] = []

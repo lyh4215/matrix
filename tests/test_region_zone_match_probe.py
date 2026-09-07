@@ -4,7 +4,14 @@ import itertools
 
 import torch
 
-from src.benchmark.region_zone_match_probe import load_region_zone_probe_config
+from src.benchmark.region_zone_match_probe import (
+    _optimization_group_metrics,
+    load_region_zone_probe_config,
+)
+from src.benchmark.region_zone_reporting import (
+    _summary_markdown,
+    _without_table_results,
+)
 from src.benchmark.region_zone_matching import (
     _count_nll_candidate_objectives_from_delta,
     _swap_candidates,
@@ -259,3 +266,88 @@ def test_region_zone_probe_config_has_requested_defaults() -> None:
     assert config.oracle.objective == "count_nll"
     assert config.synthetic.sequence_lengths == (128,)
     assert config.synthetic.sequences_per_length == 1
+
+
+def test_oracle_optimization_group_metrics_aggregate_requested_diagnostics() -> None:
+    rows = [
+        {
+            "num_observed_regions": 2,
+            "observed_region_assignment_accuracy": 0.5,
+            "token_accuracy": 0.75,
+            "observed_exact_recovery": False,
+            "optimization_gap_to_true": -0.25,
+        },
+        {
+            "num_observed_regions": 4,
+            "observed_region_assignment_accuracy": 1.0,
+            "token_accuracy": 0.5,
+            "observed_exact_recovery": True,
+            "optimization_gap_to_true": 0.75,
+        },
+    ]
+    metrics = _optimization_group_metrics(rows)
+    assert metrics == {
+        "num_tables": 2,
+        "observed_assignment_accuracy": 5 / 6,
+        "token_accuracy": 0.625,
+        "observed_exact_recovery_rate": 0.5,
+        "mean_optimization_gap": 0.25,
+        "median_optimization_gap": 0.25,
+    }
+    assert _optimization_group_metrics([]) == {
+        "num_tables": 0,
+        "observed_assignment_accuracy": None,
+        "token_accuracy": None,
+        "observed_exact_recovery_rate": None,
+        "mean_optimization_gap": None,
+        "median_optimization_gap": None,
+    }
+
+
+def test_oracle_optimization_groups_are_retained_and_rendered() -> None:
+    groups = {
+        "optimization_success": {
+            "num_tables": 3,
+            "observed_assignment_accuracy": 0.8,
+            "token_accuracy": 0.9,
+            "observed_exact_recovery_rate": 2 / 3,
+            "mean_optimization_gap": -0.2,
+            "median_optimization_gap": 0.0,
+        },
+        "optimization_failure": {
+            "num_tables": 1,
+            "observed_assignment_accuracy": 0.25,
+            "token_accuracy": 0.3,
+            "observed_exact_recovery_rate": 0.0,
+            "mean_optimization_gap": 1.5,
+            "median_optimization_gap": 1.5,
+        },
+    }
+    row = {
+        "matcher": "oracle_transition",
+        "sequence_length": 128,
+        "mean_region_coverage": 1.0,
+        "observed_region_assignment_accuracy": 0.65,
+        "full_assignment_accuracy": 0.65,
+        "token_accuracy": 0.75,
+        "observed_exact_recovery_rate": 0.5,
+        "full_exact_recovery_rate": 0.5,
+        "oracle_objective": "count_nll",
+        "fraction_predicted_objective_le_true_objective": 0.75,
+        "mean_optimization_gap": 0.225,
+        "median_optimization_gap": 0.0,
+        "oracle_convergence_rate": 1.0,
+        "optimization_groups": groups,
+        "table_results": [{"table_id": "held-out-0"}],
+    }
+    summary_row = _without_table_results(row)
+    assert summary_row["optimization_groups"] == groups
+    markdown = _summary_markdown(
+        {
+            "results": [summary_row],
+            "heuristic_interpretation": [],
+            "canonical_identifiability": {"most_ambiguous_signature_pairs": []},
+        }
+    )
+    assert "| 128 | optimization_success | 3 | 0.800000 |" in markdown
+    assert "| 128 | optimization_failure | 1 | 0.250000 |" in markdown

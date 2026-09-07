@@ -73,6 +73,9 @@ def _heuristic(results: Sequence[dict], num_zones: int) -> list[str]:
 
 
 def _summary_markdown(payload: dict) -> str:
+    def metric(value: Any) -> str:
+        return "—" if value is None else f"{float(value):.6f}"
+
     lines = [
         "# Region-to-zone permutation matching probe",
         "",
@@ -107,6 +110,28 @@ def _summary_markdown(payload: dict) -> str:
                 "{mean_optimization_gap:.6f} | {median_optimization_gap:.6f} | "
                 "{oracle_convergence_rate:.4f} |".format(**row)
             )
+        lines.extend(
+            (
+                "",
+                "## Oracle optimization outcome groups",
+                "",
+                "| Length | Group | Tables | Observed Assign | Token Acc | "
+                "Observed Exact | Mean Gap | Median Gap |",
+                "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            )
+        )
+        for row in oracle_rows:
+            for group_name in ("optimization_success", "optimization_failure"):
+                group = row["optimization_groups"][group_name]
+                lines.append(
+                    f"| {row['sequence_length']} | {group_name} | "
+                    f"{group['num_tables']} | "
+                    f"{metric(group['observed_assignment_accuracy'])} | "
+                    f"{metric(group['token_accuracy'])} | "
+                    f"{metric(group['observed_exact_recovery_rate'])} | "
+                    f"{metric(group['mean_optimization_gap'])} | "
+                    f"{metric(group['median_optimization_gap'])} |"
+                )
     lines.extend(("", "## Heuristic interpretation", ""))
     lines.extend(f"- {observation}" for observation in payload["heuristic_interpretation"])
     ambiguity = payload["canonical_identifiability"]
