@@ -132,6 +132,29 @@ def _summary_markdown(payload: dict) -> str:
                     f"{metric(group['mean_optimization_gap'])} | "
                     f"{metric(group['median_optimization_gap'])} |"
                 )
+    refined_rows = [row for row in payload["results"] if "local_search" in row]
+    if refined_rows:
+        lines.extend((
+            "", "## Learned initialization + count-NLL local search", "",
+            "| Matcher | Length | Assign delta | Token delta | Better / Worse / Same tables | "
+            "NLL gain / transition | Seconds / table | Converged |",
+            "| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: |",
+        ))
+        for row in refined_rows:
+            search = row["local_search"]
+            lines.append(
+                f"| {row['matcher']} | {row['sequence_length']} | "
+                f"{search['assignment_accuracy_delta']:+.4f} | "
+                f"{search['token_accuracy_delta']:+.4f} | "
+                f"{search['tables_assignment_improved']} / "
+                f"{search['tables_assignment_worsened']} / "
+                f"{search['tables_assignment_unchanged']} | "
+                f"{search['mean_nll_improvement_per_transition']:.6f} | "
+                f"{search['mean_seconds_per_table']:.4f} | "
+                f"{search['convergence_rate']:.4f} |"
+            )
+        lines.extend(("", "Lower count NLL does not guarantee higher assignment accuracy. "
+                      "Search time excludes neural inference and data generation."))
     lines.extend(("", "## Heuristic interpretation", ""))
     lines.extend(f"- {observation}" for observation in payload["heuristic_interpretation"])
     ambiguity = payload["canonical_identifiability"]
@@ -161,6 +184,8 @@ def _plot_curves(results: Sequence[dict], output_dir: Path) -> None:
         "oracle_transition": "#55A868",
         "learned": "#DD8452",
         "learned_structural": "#8172B3",
+        "learned_local_search": "#C44E52",
+        "learned_structural_local_search": "#64B5CD",
     }
     for metric, filename, ylabel in (
         (

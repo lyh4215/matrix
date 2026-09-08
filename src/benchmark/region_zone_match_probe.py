@@ -42,6 +42,7 @@ from .region_zone_matching import (
     stationary_distribution,
 )
 from .region_zone_reporting import write_region_zone_results
+from .region_zone_local_search import LocalSearchConfig, evaluate_local_search
 from .sanity_overfit import print_environment
 
 
@@ -134,6 +135,7 @@ class RegionZoneProbeConfig:
     oracle: OracleMatcherConfig = field(default_factory=OracleMatcherConfig)
     learned: LearnedMatcherConfig = field(default_factory=LearnedMatcherConfig)
     learned_structural: StructuralMatcherConfig = field(default_factory=StructuralMatcherConfig)
+    local_search: LocalSearchConfig = field(default_factory=LocalSearchConfig)
 
     def validate(self) -> None:
         if not self.matchers or set(self.matchers) - set(MATCHERS):
@@ -144,6 +146,7 @@ class RegionZoneProbeConfig:
         self.oracle.validate()
         self.learned.validate()
         self.learned_structural.validate()
+        self.local_search.validate()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -161,6 +164,10 @@ def _construct(cls: type, values: Mapping[str, Any] | None):
 def load_region_zone_probe_config(path: str | Path) -> RegionZoneProbeConfig:
     with Path(path).open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle) or {}
+    return region_zone_probe_config_from_dict(raw)
+
+
+def region_zone_probe_config_from_dict(raw: Mapping[str, Any]) -> RegionZoneProbeConfig:
     synthetic_raw = dict(raw.get("synthetic") or {})
     for key in ("sequence_lengths", "noise_levels"):
         if key in synthetic_raw:
@@ -173,6 +180,7 @@ def load_region_zone_probe_config(path: str | Path) -> RegionZoneProbeConfig:
         oracle=_construct(OracleMatcherConfig, raw.get("oracle")),
         learned=_construct(LearnedMatcherConfig, raw.get("learned")),
         learned_structural=_construct(StructuralMatcherConfig, raw.get("learned_structural")),
+        local_search=_construct(LocalSearchConfig, raw.get("local_search")),
     )
     config.validate()
     return config
@@ -673,6 +681,22 @@ def run_region_zone_match_probe(config: RegionZoneProbeConfig) -> dict:
                 flush=True,
             )
     identifiability = canonical_identifiability(canonical_transition)
+    if config.local_search.enabled:
+        for base_result in list(results):
+            if base_result["matcher"] not in {"learned", "learned_structural"}:
+                continue
+            refined = evaluate_local_search(
+                base_result, graph_splits["test"][base_result["sequence_length"]],
+                canonical_transition, config.local_search, config.seed,
+            )
+            results.append(refined)
+            print(json.dumps({
+                "matcher": refined["matcher"],
+                "sequence_length": refined["sequence_length"],
+                "observed_assignment_accuracy": refined["observed_region_assignment_accuracy"],
+                "token_accuracy": refined["token_accuracy"],
+                "local_search": refined["local_search"],
+            }), flush=True)
     paths = write_region_zone_results(
         results,
         learned_history,
@@ -740,6 +764,12 @@ def main() -> None:
     parser.add_argument("--structural-refinement-steps", type=int)
     parser.add_argument("--structural-beta", type=float)
     parser.add_argument("--lambda-graph", type=float)
+    parser.add_argument(
+        "--local-search", action="store_true",
+        help="Also report paired count-NLL local search on each learned matcher's predictions",
+    )
+    parser.add_argument("--local-search-max-iterations", type=int)
+    parser.add_argument("--local-search-restarts", type=int)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"))
     parser.add_argument("--output-dir")
@@ -770,6 +800,12 @@ def main() -> None:
         value = getattr(args, name)
         if value is not None:
             setattr(config.learned_structural, name, value)
+    if args.local_search:
+        config.local_search.enabled = True
+    if args.local_search_max_iterations is not None:
+        config.local_search.max_iterations = args.local_search_max_iterations
+    if args.local_search_restarts is not None:
+        config.local_search.restarts = args.local_search_restarts
     if args.seed is not None:
         config.seed = args.seed
     if args.device is not None:

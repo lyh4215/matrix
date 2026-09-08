@@ -304,6 +304,49 @@ YAML의 `learned_structural` 항목에서 `structural_refinement_steps`(기본 4
 `--matchers learned learned_structural`로 함께 실행할 수 있고, 새 모델의 history와
 checkpoint는 `learned_structural/`에 별도로 저장합니다. Steps 또는 beta를 0으로
 설정하면 unary Sinkhorn만 사용하며 graph loss는 lambda가 0일 때 비활성화됩니다.
+Structural refinement의 Sinkhorn은 batch 전체를 한 번에 계산합니다. 미관측 region을
+제자리 neutral dummy row로 두어 기존 Sinkhorn과 같은 확률/gradient를 유지하면서
+GPU에서 batch의 각 예제마다 반복 연산을 별도로 호출하는 부담을 줄입니다.
+
+학습된 permutation을 초기값으로 count-NLL local search를 추가하려면
+`--local-search`를 지정합니다. 기존 두 모델의 학습과 예측은 그대로 남고,
+`learned_local_search`와 `learned_structural_local_search` 결과가 별도로 추가됩니다.
+검색은 CPU에서 기존 oracle의 delta-scored pair swap/3-cycle descent를 재사용합니다.
+기본 초기값은 learned 예측 하나이며 oracle 초기화나 정답 label은 사용하지 않습니다.
+`--local-search-max-iterations`(기본 50), `--local-search-restarts`(기본 1)를 조절할 수
+있습니다. 추가 restart는 learned permutation의 1~3개 pair를 바꾼 초기값을 사용합니다.
+항상 보정 전 permutation을 후보로 유지하고 최종 count NLL을 다시 계산하므로
+초기 예측보다 NLL이 나쁜 결과는 반환하지 않습니다. YAML 항목은 `local_search`입니다.
+
+`summary.md`에는 같은 table의 보정 전후 assignment/token delta, assignment 정확도가
+개선/악화/동일한 table 수, transition당 NLL 감소량, table당 검색 시간과 수렴률을
+기록합니다. 검색 시간은 neural inference와 데이터 생성 시간을 제외합니다.
+NLL이 좋아져도 finite-sample noise 때문에 정답률은 나빠질 수 있으므로 둘을 함께
+비교해야 합니다. Validation checkpoint 선택은 보정 전 accuracy를 그대로 사용합니다.
+
+기존 실험의 `raw_results.json`이 있으면 **재학습이나 checkpoint 로딩 없이** 보정할 수
+있습니다. 원본 config/seed로 test graph를 다시 만들고 저장된 예측을 초기값으로 씁니다.
+원본 결과와 canonical matrix/table identity가 맞는지도 확인합니다.
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python region_zone_refine.py \
+  --results artifacts/region_zone_match_probe/raw_results.json \
+  --output-dir artifacts/region_zone_match_refined \
+  --restarts 1
+```
+
+원본 `raw_results.json`이 있는 디렉터리는 덮어쓸 수 없습니다. 새 결과 디렉터리에
+원래 baseline과 보정 결과를 함께 저장합니다. 이전 버전의 `learned` 결과도 지원하며,
+정답률 비교용 `summary.json`만으로는 개별 table 예측이 없어 실행할 수 없습니다.
+
+Colab에서 새 실험을 실행하려면
+[준비된 notebook](https://colab.research.google.com/github/lyh4215/matrix/blob/main/notebooks/region_zone_structural_colab.ipynb)을
+열어 GPU 런타임으로 실행하세요. 기본값은 길이 128/256 **각각 별도 학습**, train 1600 /
+validation 100 / test 200 tables, 50 epochs, batch 8, seed 42입니다. 두 모델과 각각의
+local search를 같은 데이터에서 비교하고, 결과/로그/checkpoint를 Drive에 저장해 ZIP으로
+묶습니다. 먼저 128만 실행하려면 `LENGTHS = [128]`로 바꾸세요. 기존 raw 결과가 있다면
+`SOURCE_RESULTS`에 경로를 지정해 학습을 생략할 수 있습니다. `INCLUDE_ORACLE = True`는
+같은 test tables의 oracle 결과도 재계산하며, 이 탐색은 GPU로 가속되지 않습니다.
 
 한 table에서 합칠 sequence 수는 `--sequences-per-table N`으로 조절합니다. 결과는
 기본적으로 `artifacts/region_zone_match_probe/`에 raw/summary JSON과 Markdown,

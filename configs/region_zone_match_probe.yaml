@@ -54,3 +54,10 @@ learned_structural:
   structural_refinement_steps: 4
   structural_beta: 0.1
   lambda_graph: 0.5
+
+# Optional inference-only paired comparison; does not change learned training.
+local_search:
+  enabled: false
+  max_iterations: 50
+  restarts: 1
+  epsilon: 1.0e-12

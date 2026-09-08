@@ -12,6 +12,7 @@ from src.benchmark import region_zone_match_probe as probe
 from src.data.controlled_synthetic import MarkovZoneLanguage
 from src.models import learned_structural_matcher as structural
 from src.models.region_zone_matcher import LearnedRegionZoneMatcher, observed_permutation_nll
+from src.models.sinkhorn import sinkhorn
 
 
 def _canonical(zones: int = 19) -> torch.Tensor:
@@ -40,6 +41,21 @@ def _inputs(partial: bool = False):
     counts *= observed.unsqueeze(-1) & observed.unsqueeze(-2)
     transition = (counts + 1e-3) / (counts + 1e-3).sum(-1, keepdim=True)
     return features, transition, observed, counts
+
+
+def test_batched_structural_sinkhorn_matches_existing_probabilities_and_gradients() -> None:
+    torch.manual_seed(22)
+    scores = torch.randn(3, 19, 19, dtype=torch.float64, requires_grad=True)
+    observed = torch.ones(3, 19, dtype=torch.bool)
+    observed[1, ::2] = False
+    observed[2, :18] = False
+    existing = sinkhorn(scores, row_mask=observed, iterations=60, temperature=0.7)
+    batched = structural.structural_sinkhorn(scores, observed, iterations=60, temperature=0.7)
+    assert torch.allclose(existing, batched, atol=1e-12, rtol=1e-12)
+    weights = torch.randn_like(scores)
+    existing_grad = torch.autograd.grad((existing * weights).sum(), scores)[0]
+    batched_grad = torch.autograd.grad((batched * weights).sum(), scores)[0]
+    assert torch.allclose(existing_grad, batched_grad, atol=1e-12, rtol=1e-12)
 
 
 @pytest.mark.parametrize("partial", [False, True])

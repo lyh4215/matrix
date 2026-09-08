@@ -6,7 +6,31 @@ import torch
 from torch import Tensor
 
 from .region_zone_matcher import LearnedRegionZoneMatcher, RegionZoneMatchOutput
-from .sinkhorn import sinkhorn
+
+
+def structural_sinkhorn(
+    scores: Tensor, observed_mask: Tensor, iterations: int, temperature: float,
+) -> Tensor:
+    """Batch the square neutral-dummy Sinkhorn used by structural refinement.
+
+    Inactive region rows stay in place with zero logits as neutral dummy rows.
+    This is equivalent to collecting observed rows and padding with dummies,
+    while avoiding a Python loop and separate GPU launches for every example.
+    """
+    if scores.ndim != 3 or scores.shape[-1] != scores.shape[-2]:
+        raise ValueError("structural Sinkhorn requires square batched scores")
+    if observed_mask.shape != scores.shape[:2]:
+        raise ValueError("observed mask must align with score rows")
+    if iterations < 1 or temperature <= 0:
+        raise ValueError("iterations and temperature must be positive")
+    if not bool(observed_mask.any(dim=-1).all()):
+        raise ValueError("each Sinkhorn matrix needs an observed row")
+    log_values = scores.masked_fill(~observed_mask.unsqueeze(-1), 0.0) / temperature
+    for _ in range(iterations):
+        log_values = log_values - torch.logsumexp(log_values, dim=-1, keepdim=True)
+        log_values = log_values - torch.logsumexp(log_values, dim=-2, keepdim=True)
+    log_values = log_values - torch.logsumexp(log_values, dim=-1, keepdim=True)
+    return log_values.exp().masked_fill(~observed_mask.unsqueeze(-1), 0.0)
 
 
 def transition_structural_score(
@@ -113,9 +137,9 @@ class LearnedStructuralRegionZoneMatcher(LearnedRegionZoneMatcher):
             # A constant per row cancels in Sinkhorn and reduces logit magnitude.
             structural = structural - structural.mean(dim=-1, keepdim=True)
             scores = unary.scores + self.structural_beta * structural
-            assignment = sinkhorn(
+            assignment = structural_sinkhorn(
                 scores,
-                row_mask=observed_mask,
+                observed_mask=observed_mask,
                 iterations=self.sinkhorn_iterations,
                 temperature=self.sinkhorn_temperature,
             )
