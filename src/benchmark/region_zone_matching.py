@@ -13,7 +13,7 @@ from ..data.dataset import CipherEpisode
 from ..training.assignment import maximum_weight_assignment
 
 
-MATCHERS = ("random", "frequency", "oracle_transition", "learned")
+MATCHERS = ("random", "frequency", "oracle_transition", "learned", "learned_structural")
 
 
 @dataclass(frozen=True)

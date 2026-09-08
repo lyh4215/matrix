@@ -48,3 +48,9 @@ learned:
   learning_rate: 0.0003
   weight_decay: 0.0001
   device: auto
+
+# Uses the learned section above for the shared unary GNN and training settings.
+learned_structural:
+  structural_refinement_steps: 4
+  structural_beta: 0.1
+  lambda_graph: 0.5

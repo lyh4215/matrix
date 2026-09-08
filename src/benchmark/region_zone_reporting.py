@@ -160,6 +160,7 @@ def _plot_curves(results: Sequence[dict], output_dir: Path) -> None:
         "frequency": "#4C72B0",
         "oracle_transition": "#55A868",
         "learned": "#DD8452",
+        "learned_structural": "#8172B3",
     }
     for metric, filename, ylabel in (
         (
@@ -196,7 +197,7 @@ def _plot_curves(results: Sequence[dict], output_dir: Path) -> None:
     preferred = next(
         (
             row
-            for matcher in ("oracle_transition", "learned", "frequency", "random")
+            for matcher in ("oracle_transition", "learned_structural", "learned", "frequency", "random")
             for row in results
             if row["matcher"] == matcher
             and row["sequence_length"]
@@ -236,6 +237,8 @@ def write_region_zone_results(
     canonical_transition: Sequence[Sequence[float]],
     config: dict,
     output_dir: str | Path,
+    structural_history: Sequence[dict] = (),
+    structural_checkpoint: str | None = None,
 ) -> dict[str, str | None]:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -249,6 +252,8 @@ def write_region_zone_results(
             "results": list(results),
             "learned_history": list(learned_history),
             "learned_checkpoint": learned_checkpoint,
+            "learned_structural_history": list(structural_history),
+            "learned_structural_checkpoint": structural_checkpoint,
         },
     )
     summary_results = [_without_table_results(result) for result in results]
@@ -278,6 +283,9 @@ def write_region_zone_results(
     history_path = output_path / "learned" / "history.json"
     if learned_history:
         _write_json(history_path, list(learned_history))
+    structural_history_path = output_path / "learned_structural" / "history.json"
+    if structural_history:
+        _write_json(structural_history_path, list(structural_history))
     _plot_curves(results, output_path)
     return {
         "raw_results": str(raw_path),
@@ -286,5 +294,7 @@ def write_region_zone_results(
         "oracle_table_results": str(oracle_path) if oracle_tables else None,
         "learned_history": str(history_path) if learned_history else None,
         "learned_checkpoint": learned_checkpoint,
+        "learned_structural_history": str(structural_history_path) if structural_history else None,
+        "learned_structural_checkpoint": structural_checkpoint,
         "plots": str(output_path / "plots"),
     }

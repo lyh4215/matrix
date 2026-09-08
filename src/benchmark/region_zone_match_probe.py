@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 import statistics
 from dataclasses import asdict, dataclass, field, fields
@@ -19,6 +20,10 @@ from ..data.controlled_synthetic import (
 from ..models.region_zone_matcher import (
     LearnedRegionZoneMatcher,
     observed_permutation_nll,
+)
+from ..models.learned_structural_matcher import (
+    LearnedStructuralRegionZoneMatcher,
+    graph_consistency_loss,
 )
 from ..training.assignment import maximum_weight_assignment
 from ..training.train import resolve_device
@@ -92,6 +97,25 @@ class LearnedMatcherConfig:
 
 
 @dataclass
+class StructuralMatcherConfig:
+    structural_refinement_steps: int = 4
+    structural_beta: float = 0.1
+    lambda_graph: float = 0.5
+
+    def validate(self) -> None:
+        if (
+            not isinstance(self.structural_refinement_steps, int)
+            or isinstance(self.structural_refinement_steps, bool)
+            or self.structural_refinement_steps < 0
+        ):
+            raise ValueError("structural_refinement_steps must be a non-negative integer")
+        for name in ("structural_beta", "lambda_graph"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and non-negative")
+
+
+@dataclass
 class RegionZoneProbeConfig:
     seed: int = 42
     matchers: tuple[str, ...] = MATCHERS
@@ -109,6 +133,7 @@ class RegionZoneProbeConfig:
     )
     oracle: OracleMatcherConfig = field(default_factory=OracleMatcherConfig)
     learned: LearnedMatcherConfig = field(default_factory=LearnedMatcherConfig)
+    learned_structural: StructuralMatcherConfig = field(default_factory=StructuralMatcherConfig)
 
     def validate(self) -> None:
         if not self.matchers or set(self.matchers) - set(MATCHERS):
@@ -118,6 +143,7 @@ class RegionZoneProbeConfig:
         self.synthetic.validate()
         self.oracle.validate()
         self.learned.validate()
+        self.learned_structural.validate()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -146,6 +172,7 @@ def load_region_zone_probe_config(path: str | Path) -> RegionZoneProbeConfig:
         synthetic=_construct(ControlledSyntheticConfig, synthetic_raw),
         oracle=_construct(OracleMatcherConfig, raw.get("oracle")),
         learned=_construct(LearnedMatcherConfig, raw.get("learned")),
+        learned_structural=_construct(StructuralMatcherConfig, raw.get("learned_structural")),
     )
     config.validate()
     return config
@@ -376,7 +403,12 @@ def _learned_assignments(
         for start in range(0, len(graphs), batch_size):
             batch = graphs[start : start + batch_size]
             features, transition, observed, _targets = _stack_graphs(batch, device)
-            probabilities = model(features, transition, observed).assignment_probabilities.cpu()
+            if isinstance(model, LearnedStructuralRegionZoneMatcher):
+                counts = torch.stack([graph.transition_counts for graph in batch]).to(transition)
+                output = model(features, transition, observed, counts)
+            else:
+                output = model(features, transition, observed)
+            probabilities = output.assignment_probabilities.cpu()
             for row, graph in enumerate(batch):
                 observed_rows = graph.observed_mask.nonzero(as_tuple=False).flatten()
                 partial = maximum_weight_assignment(
@@ -399,9 +431,12 @@ def _evaluate_learned_graphs(
     def predictor(_graph: AnonymousRegionGraph, index: int):
         return assignments[index], {}
 
-    return _evaluate_graphs(
-        "learned", graphs, predictor, model.num_zones
+    matcher = (
+        "learned_structural"
+        if isinstance(model, LearnedStructuralRegionZoneMatcher)
+        else "learned"
     )
+    return _evaluate_graphs(matcher, graphs, predictor, model.num_zones)
 
 
 def _train_learned_matcher(
@@ -410,7 +445,13 @@ def _train_learned_matcher(
     test_graphs_by_length: dict[int, list[AnonymousRegionGraph]],
     config: RegionZoneProbeConfig,
     device: torch.device,
+    matcher: str = "learned",
+    canonical_transition: Tensor | None = None,
 ) -> tuple[list[dict], list[dict], str]:
+    if matcher not in {"learned", "learned_structural"}:
+        raise ValueError(f"unsupported learned matcher {matcher!r}")
+    if matcher == "learned_structural" and canonical_transition is None:
+        raise ValueError("learned_structural requires the canonical transition matrix")
     random.seed(config.seed)
     torch.manual_seed(config.seed)
     if torch.cuda.is_available():
@@ -424,14 +465,23 @@ def _train_learned_matcher(
         for graph in graphs
     ]
     learned = config.learned
-    model = LearnedRegionZoneMatcher(
+    model_kwargs = dict(
         num_zones=config.synthetic.num_zones,
         d_model=learned.d_model,
         num_layers=learned.num_layers,
         dropout=learned.dropout,
         sinkhorn_iterations=learned.sinkhorn_iterations,
         sinkhorn_temperature=learned.sinkhorn_temperature,
-    ).to(device)
+    )
+    if matcher == "learned_structural":
+        model = LearnedStructuralRegionZoneMatcher(
+            canonical_transition=canonical_transition,
+            structural_refinement_steps=config.learned_structural.structural_refinement_steps,
+            structural_beta=config.learned_structural.structural_beta,
+            **model_kwargs,
+        ).to(device)
+    else:
+        model = LearnedRegionZoneMatcher(**model_kwargs).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=learned.learning_rate, weight_decay=learned.weight_decay
     )
@@ -444,14 +494,27 @@ def _train_learned_matcher(
         generator = torch.Generator().manual_seed(config.seed + epoch)
         order = torch.randperm(len(train_graphs), generator=generator).tolist()
         losses: list[float] = []
+        permutation_losses: list[float] = []
+        graph_losses: list[float] = []
         for start in range(0, len(order), learned.batch_size):
             batch = [train_graphs[index] for index in order[start : start + learned.batch_size]]
             features, transition, observed, targets = _stack_graphs(batch, device)
             optimizer.zero_grad(set_to_none=True)
-            output = model(features, transition, observed)
+            if isinstance(model, LearnedStructuralRegionZoneMatcher):
+                counts = torch.stack([graph.transition_counts for graph in batch]).to(transition)
+                output = model(features, transition, observed, counts)
+            else:
+                output = model(features, transition, observed)
             loss = observed_permutation_nll(
                 output.assignment_probabilities, targets, observed
             )
+            if isinstance(model, LearnedStructuralRegionZoneMatcher):
+                graph_loss = graph_consistency_loss(
+                    output.assignment_probabilities, counts, model.canonical_transition
+                )
+                permutation_losses.append(float(loss.detach()))
+                graph_losses.append(float(graph_loss.detach()))
+                loss = loss + config.learned_structural.lambda_graph * graph_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -473,8 +536,11 @@ def _train_learned_matcher(
                 "observed_exact_recovery_rate"
             ],
         }
+        if graph_losses:
+            record["train_permutation_loss"] = sum(permutation_losses) / len(permutation_losses)
+            record["train_graph_loss"] = sum(graph_losses) / len(graph_losses)
         history.append(record)
-        print(json.dumps({"matcher": "learned", **record}), flush=True)
+        print(json.dumps({"matcher": matcher, **record}), flush=True)
         accuracy = float(validation["observed_region_assignment_accuracy"])
         if accuracy > best_accuracy:
             best_accuracy = accuracy
@@ -485,7 +551,7 @@ def _train_learned_matcher(
             }
     assert best_state is not None
     model.load_state_dict(best_state)
-    checkpoint_path = Path(config.output_dir) / "learned" / "checkpoint.pt"
+    checkpoint_path = Path(config.output_dir) / matcher / "checkpoint.pt"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
@@ -494,6 +560,10 @@ def _train_learned_matcher(
             "num_zones": config.synthetic.num_zones,
             "best_epoch": best_epoch,
             "seed": config.seed,
+            **(
+                {"structural_config": asdict(config.learned_structural)}
+                if matcher == "learned_structural" else {}
+            ),
         },
         checkpoint_path,
     )
@@ -538,7 +608,7 @@ def run_region_zone_match_probe(config: RegionZoneProbeConfig) -> dict:
     }
     results: list[dict] = []
     for matcher in config.matchers:
-        if matcher == "learned":
+        if matcher in {"learned", "learned_structural"}:
             continue
         matcher_results = _run_nonlearned(
             matcher, graph_splits["test"], canonical_transition, config
@@ -565,20 +635,30 @@ def run_region_zone_match_probe(config: RegionZoneProbeConfig) -> dict:
             )
     learned_history: list[dict] = []
     learned_checkpoint: str | None = None
-    if "learned" in config.matchers:
-        learned_results, learned_history, learned_checkpoint = _train_learned_matcher(
+    structural_history: list[dict] = []
+    structural_checkpoint: str | None = None
+    for matcher in ("learned", "learned_structural"):
+        if matcher not in config.matchers:
+            continue
+        learned_results, history, checkpoint = _train_learned_matcher(
             graph_splits["train"],
             graph_splits["validation"],
             graph_splits["test"],
             config,
             device,
+            matcher=matcher,
+            canonical_transition=canonical_transition if matcher == "learned_structural" else None,
         )
+        if matcher == "learned":
+            learned_history, learned_checkpoint = history, checkpoint
+        else:
+            structural_history, structural_checkpoint = history, checkpoint
         results.extend(learned_results)
         for result in learned_results:
             print(
                 json.dumps(
                     {
-                        "matcher": "learned",
+                        "matcher": matcher,
                         "sequence_length": result["sequence_length"],
                         "observed_assignment_accuracy": result[
                             "observed_region_assignment_accuracy"
@@ -601,10 +681,13 @@ def run_region_zone_match_probe(config: RegionZoneProbeConfig) -> dict:
         bundle.transition_matrix,
         config.to_dict(),
         config.output_dir,
+        structural_history=structural_history,
+        structural_checkpoint=structural_checkpoint,
     )
     return {
         "results": results,
         "learned_history": learned_history,
+        "learned_structural_history": structural_history,
         "identifiability": identifiability,
         "paths": paths,
     }
@@ -654,12 +737,17 @@ def main() -> None:
     parser.add_argument("--oracle-objective", choices=("mse", "count_nll"))
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--batch-size", type=int)
+    parser.add_argument("--structural-refinement-steps", type=int)
+    parser.add_argument("--structural-beta", type=float)
+    parser.add_argument("--lambda-graph", type=float)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"))
     parser.add_argument("--output-dir")
     parser.add_argument("--smoke", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     config = load_region_zone_probe_config(args.config)
+    if args.smoke:
+        _apply_smoke_settings(config)
     if args.matchers:
         config.matchers = tuple(args.matchers)
     if args.train_tables is not None:
@@ -678,14 +766,16 @@ def main() -> None:
         config.learned.epochs = args.epochs
     if args.batch_size is not None:
         config.learned.batch_size = args.batch_size
+    for name in ("structural_refinement_steps", "structural_beta", "lambda_graph"):
+        value = getattr(args, name)
+        if value is not None:
+            setattr(config.learned_structural, name, value)
     if args.seed is not None:
         config.seed = args.seed
     if args.device is not None:
         config.learned.device = args.device
     if args.output_dir is not None:
         config.output_dir = args.output_dir
-    if args.smoke:
-        _apply_smoke_settings(config)
     run_region_zone_match_probe(config)
 
 

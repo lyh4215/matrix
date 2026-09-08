@@ -273,6 +273,38 @@ python region_zone_match_probe.py \
   --seed 42
 ```
 
+구조 일관성으로 soft permutation을 반복 보정하는 별도 matcher:
+
+```bash
+python region_zone_match_probe.py \
+  --matchers learned_structural \
+  --structural-refinement-steps 4 \
+  --structural-beta 0.1 \
+  --lambda-graph 0.5
+```
+
+`learned_structural`은 기존 `learned` GNN/unary 구현을 상속하고,
+`S0 = Sinkhorn(U)` 뒤에 `R = C S (log P)^T + C^T S log P`,
+`S_next = Sinkhorn(U + beta R)`를 기본 4회 반복합니다. `C`는 smoothing하지 않은
+anonymous transition count, `P`는 `bundle.transition_matrix`이며 checkpoint buffer에
+저장됩니다. `log P`는 `clamp_min(1e-8)`로 계산하고 R의 행 평균을 빼서 logit 크기를
+줄입니다(Sinkhorn 결과는 동일). Count를 정규화하지 않으므로 beta는 transition 한 건당
+가중치이며 sequence 길이/개수가 커질수록 구조 점수의 영향도 커집니다.
+
+학습 loss는 기존 observed permutation NLL에 `lambda_graph * Lgraph`를 더합니다.
+`Q_hat = S P S^T`, `Lgraph = -sum(C * log(clamp(Q_hat, 1e-8))) / sum(C)`를
+graph별로 계산해 batch 평균하며, transition이 없는 graph는 0을 기여합니다.
+미관측 region은 기존 neutral-dummy Sinkhorn으로 처리하고, 실제 count가 없는 edge는
+loss에 기여하지 않습니다. 반복 과정 전체가 미분 가능하며 numeric cipher value,
+digit, numeric region 위치를 추가 입력하지 않습니다.
+
+YAML의 `learned_structural` 항목에서 `structural_refinement_steps`(기본 4),
+`structural_beta`(0.1), `lambda_graph`(0.5)를 설정합니다. GNN 크기와 optimizer/epoch
+설정은 기존 `learned` 항목을 공유하며, 두 matcher는 각각 독립적으로 학습합니다.
+`--matchers learned learned_structural`로 함께 실행할 수 있고, 새 모델의 history와
+checkpoint는 `learned_structural/`에 별도로 저장합니다. Steps 또는 beta를 0으로
+설정하면 unary Sinkhorn만 사용하며 graph loss는 lambda가 0일 때 비활성화됩니다.
+
 한 table에서 합칠 sequence 수는 `--sequences-per-table N`으로 조절합니다. 결과는
 기본적으로 `artifacts/region_zone_match_probe/`에 raw/summary JSON과 Markdown,
 oracle table diagnostics, learned history/checkpoint, length curve와 confusion matrix로
