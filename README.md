@@ -340,6 +340,33 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python region_zone_refine.py \
 정답률 비교용 `summary.json`만으로는 개별 table 예측이 없어 실행할 수 없습니다.
 
 Colab에서 새 실험을 실행하려면
+다음 benchmark 파일을 바로 사용할 수 있습니다. GPU 런타임에서 repository 설치 후:
+
+```bash
+pip install -e .
+python region_zone_benchmark.py
+```
+
+전용 설정 파일은 `configs/region_zone_benchmark.yaml`입니다. 기본으로 길이 128/256을
+각각 독립적으로 학습합니다(train 1600 / validation 100 / test 200, 50 epochs,
+batch 8, seed 42). `learned`, `learned_structural`과 각각의 local search 결과를 비교하며,
+`artifacts/region_zone_benchmark/<실행시간>/`에 통합 `summary.csv`, `summary.json`과
+길이별 상세 결과/checkpoint를 저장합니다. 같은 이름의 ZIP도 자동 생성합니다.
+
+```bash
+# 128만 먼저 실행
+python region_zone_benchmark.py --sequence-lengths 128
+# Drive 등 원하는 위치에 저장
+python region_zone_benchmark.py --output-dir /content/drive/MyDrive/matrix_benchmark
+# 작은 CPU smoke (4 zones, 1 epoch)
+python region_zone_benchmark.py --smoke
+```
+
+`--epochs`, `--train-tables`, `--validation-tables`, `--test-tables`, `--batch-size`,
+`--seed`, `--device`로 설정을 바꿀 수 있고, `--include-oracle`로 oracle 비교도 추가합니다.
+GPU가 없으면 기본 실행은 즉시 중단하므로 CPU에서 본 benchmark가 실수로 시작되지 않습니다.
+
+Notebook을 선호한다면
 [준비된 notebook](https://colab.research.google.com/github/lyh4215/matrix/blob/main/notebooks/region_zone_structural_colab.ipynb)을
 열어 GPU 런타임으로 실행하세요. 기본값은 길이 128/256 **각각 별도 학습**, train 1600 /
 validation 100 / test 200 tables, 50 epochs, batch 8, seed 42입니다. 두 모델과 각각의
