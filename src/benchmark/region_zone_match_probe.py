@@ -43,6 +43,7 @@ from .region_zone_matching import (
 )
 from .region_zone_reporting import write_region_zone_results
 from .region_zone_local_search import LocalSearchConfig, evaluate_local_search
+from .region_zone_complementarity import append_complementarity
 from .sanity_overfit import print_environment
 
 
@@ -136,6 +137,7 @@ class RegionZoneProbeConfig:
     learned: LearnedMatcherConfig = field(default_factory=LearnedMatcherConfig)
     learned_structural: StructuralMatcherConfig = field(default_factory=StructuralMatcherConfig)
     local_search: LocalSearchConfig = field(default_factory=LocalSearchConfig)
+    compare_oracle: bool = False
 
     def validate(self) -> None:
         if not self.matchers or set(self.matchers) - set(MATCHERS):
@@ -147,6 +149,11 @@ class RegionZoneProbeConfig:
         self.learned.validate()
         self.learned_structural.validate()
         self.local_search.validate()
+        if self.compare_oracle and (
+            not {"oracle_transition", "learned_structural"}.issubset(self.matchers)
+            or not self.local_search.enabled or self.oracle.objective != "count_nll"
+        ):
+            raise ValueError("oracle comparison requires oracle_transition, learned_structural, local search, and count_nll")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -181,6 +188,7 @@ def region_zone_probe_config_from_dict(raw: Mapping[str, Any]) -> RegionZoneProb
         learned=_construct(LearnedMatcherConfig, raw.get("learned")),
         learned_structural=_construct(StructuralMatcherConfig, raw.get("learned_structural")),
         local_search=_construct(LocalSearchConfig, raw.get("local_search")),
+        compare_oracle=bool(raw.get("compare_oracle", False)),
     )
     config.validate()
     return config
@@ -697,6 +705,13 @@ def run_region_zone_match_probe(config: RegionZoneProbeConfig) -> dict:
                 "token_accuracy": refined["token_accuracy"],
                 "local_search": refined["local_search"],
             }), flush=True)
+    if config.compare_oracle:
+        append_complementarity(results, graph_splits["test"], canonical_transition, config.oracle.epsilon)
+        for row in results:
+            if "complementarity" in row:
+                print(json.dumps({k: v for k, v in row.items() if k in {
+                    "matcher", "sequence_length", "observed_region_assignment_accuracy", "token_accuracy", "complementarity",
+                }}), flush=True)
     paths = write_region_zone_results(
         results,
         learned_history,

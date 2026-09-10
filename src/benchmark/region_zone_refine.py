@@ -10,7 +10,8 @@ import torch
 
 from ..data.controlled_synthetic import generate_controlled_benchmark
 from .region_zone_local_search import LocalSearchConfig, evaluate_local_search
-from .region_zone_match_probe import region_zone_probe_config_from_dict
+from .region_zone_match_probe import region_zone_probe_config_from_dict, _run_nonlearned
+from .region_zone_complementarity import append_complementarity
 from .region_zone_matching import build_graphs_by_length, canonical_identifiability
 from .region_zone_reporting import write_region_zone_results
 
@@ -20,6 +21,7 @@ def refine_saved_results(
     output_dir: str | Path,
     search: LocalSearchConfig | None = None,
     matchers: Sequence[str] = ("learned", "learned_structural"),
+    compare_oracle: bool = False,
 ) -> dict:
     """Re-evaluate saved predictions without loading or training neural models."""
     source = Path(source).resolve()
@@ -34,10 +36,12 @@ def refine_saved_results(
     config = region_zone_probe_config_from_dict(payload["config"])
     config.output_dir = str(output_dir)
     config.local_search = LocalSearchConfig(**{**asdict(search), "enabled": True})
-    base_results = [row for row in payload["results"] if "local_search" not in row]
+    base_results = [row for row in payload["results"] if "local_search" not in row and "complementarity" not in row]
     selected = [row for row in base_results if row["matcher"] in matchers]
     if not selected:
         raise ValueError("source raw_results.json contains no selected learned predictions")
+    if compare_oracle and not any(row["matcher"] == "learned_structural" for row in selected):
+        raise ValueError("oracle comparison requires saved learned_structural predictions")
     # Reproduce the exact source benchmark, including split sizes and seed.
     # Changing these could change table identities in the generator.
     bundle = generate_controlled_benchmark(config.synthetic, config.seed)
@@ -64,6 +68,21 @@ def refine_saved_results(
             "token_accuracy": refined["token_accuracy"],
             "local_search": refined["local_search"],
         }), flush=True)
+    if compare_oracle:
+        lengths = {r["sequence_length"] for r in selected if r["matcher"] == "learned_structural"}
+        comparison_graphs = {length: graphs[length] for length in sorted(lengths)}
+        # Recompute oracle using exactly the same graphs, raw counts and epsilon.
+        # Previously reported oracle objectives may have used MSE or another run.
+        config.oracle.objective = "count_nll"
+        config.compare_oracle = True
+        if "oracle_transition" not in config.matchers:
+            config.matchers = ("oracle_transition", *config.matchers)
+        results = [r for r in results if not (r["matcher"] == "oracle_transition" and r["sequence_length"] in lengths)]
+        print("Running oracle on the saved experiment's test tables (CPU, no training).", flush=True)
+        results.extend(_run_nonlearned("oracle_transition", comparison_graphs, canonical, config))
+        append_complementarity(results, comparison_graphs, canonical, config.oracle.epsilon)
+    else:
+        config.compare_oracle = False
     config_payload = {**config.to_dict(), "postprocess_source": str(source)}
     paths = write_region_zone_results(
         results, payload.get("learned_history", []), payload.get("learned_checkpoint"),

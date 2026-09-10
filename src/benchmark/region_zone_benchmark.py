@@ -67,6 +67,9 @@ def run_benchmark(config: RegionZoneProbeConfig) -> dict:
         print(f"\n[{index}/{len(lengths)}] Independent benchmark: length={length}", flush=True)
         result = run_region_zone_match_probe(current)
         manifest["runs"].append({"sequence_length": length, "paths": result["paths"]})
+        comparisons = [row for row in result["results"] if "complementarity" in row]
+        if comparisons:
+            manifest["runs"][-1]["complementarity"] = comparisons[0]["complementarity"]
         for row in result["results"]:
             search = row.get("local_search", {})
             manifest["results"].append({
@@ -112,6 +115,7 @@ def main() -> None:
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"))
     parser.add_argument("--output-dir")
     parser.add_argument("--include-oracle", action="store_true")
+    parser.add_argument("--compare-oracle", action="store_true", help="Compare oracle vs structural local search and select by count NLL")
     parser.add_argument("--smoke", action="store_true", help="Tiny CPU check: 4 zones, length 16, one epoch")
     args = parser.parse_args()
     config = load_region_zone_probe_config(args.config)
@@ -131,7 +135,10 @@ def main() -> None:
         config.seed = args.seed
     if args.output_dir is not None:
         config.output_dir = args.output_dir
-    if args.include_oracle and "oracle_transition" not in config.matchers:
+    if args.compare_oracle:
+        config.compare_oracle = True
+        config.local_search.enabled = True
+    if (args.include_oracle or config.compare_oracle) and "oracle_transition" not in config.matchers:
         config.matchers = ("oracle_transition", *config.matchers)
     run_benchmark(config)
 

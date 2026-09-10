@@ -155,6 +155,32 @@ def _summary_markdown(payload: dict) -> str:
             )
         lines.extend(("", "Lower count NLL does not guarantee higher assignment accuracy. "
                       "Search time excludes neural inference and data generation."))
+    for row in payload["results"]:
+        if "complementarity" not in row:
+            continue
+        d = row["complementarity"]
+        lines.extend(("", f"## Oracle / structural complementarity, length {row['sequence_length']}", "",
+                      f"Selected oracle: {d['selected_oracle_tables']}; selected structural: {d['selected_structural_tables']}. "
+                      f"Same observed permutation: {d['same_observed_assignment_tables']} tables.",
+                      "", "Exact recovery overlap: " + ", ".join(f"{k}={v}" for k, v in d["exact_overlap"].items()),
+                      "", "| Candidate | NLL ≤ true | Mean gap | Median gap |",
+                      "| --- | ---: | ---: | ---: |"))
+        for name, metrics in d["objective_diagnostics"].items():
+            lines.append(f"| {name} | {metrics['fraction_nll_le_true']:.4f} | "
+                         f"{metrics['mean_gap_to_true']:.6f} | {metrics['median_gap_to_true']:.6f} |")
+        lines.extend(("", "Paired selector changes:", ""))
+        for name, metrics in d["paired_vs_candidates"].items():
+            lines.append(f"- vs {name}: assignment {metrics['assignment_delta']:+.4f}, "
+                         f"token {metrics['token_delta']:+.4f}; improved {metrics['tables_improved']}, "
+                         f"worsened {metrics['tables_worsened']} tables.")
+        upper = d["label_assisted_diagnostic_only"]
+        lines.extend(("", "Label-assisted best-of-two (diagnostic only; not a deployable selector): "
+                      f"assignment {upper['best_of_two_assignment_accuracy']:.4f}, "
+                      f"token {upper['best_of_two_token_accuracy']:.4f}, "
+                      f"either exact {upper['either_exact_rate']:.4f}. "
+                      f"NLL selector missed the more accurate candidate on {upper['selector_missed_better_assignment_tables']} tables.",
+                      "", "Selection uses only recomputed raw-count NLL; exact ties retain oracle. "
+                      "NLL ≤ true does not imply global optimality."))
     lines.extend(("", "## Heuristic interpretation", ""))
     lines.extend(f"- {observation}" for observation in payload["heuristic_interpretation"])
     ambiguity = payload["canonical_identifiability"]
@@ -186,6 +212,7 @@ def _plot_curves(results: Sequence[dict], output_dir: Path) -> None:
         "learned_structural": "#8172B3",
         "learned_local_search": "#C44E52",
         "learned_structural_local_search": "#64B5CD",
+        "oracle_structural_nll_select": "#CCB974",
     }
     for metric, filename, ylabel in (
         (
