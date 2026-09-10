@@ -593,10 +593,7 @@ def _train_learned_matcher(
     return results, history, str(checkpoint_path)
 
 
-def run_region_zone_match_probe(config: RegionZoneProbeConfig) -> dict:
-    config.validate()
-    device = resolve_device(config.learned.device)
-    print_environment(device, "Region-zone matching probe")
+def _synthetic_graph_data(config: RegionZoneProbeConfig) -> tuple[Tensor, dict, dict]:
     bundle = generate_controlled_benchmark(config.synthetic, config.seed)
     canonical_transition = torch.tensor(bundle.transition_matrix, dtype=torch.float64)
     graph_splits = {
@@ -622,6 +619,19 @@ def run_region_zone_match_probe(config: RegionZoneProbeConfig) -> dict:
             config.seed + 5003,
         ),
     }
+    return canonical_transition, graph_splits, {}
+
+
+def run_region_zone_match_probe(
+    config: RegionZoneProbeConfig,
+    *, graph_data: tuple[Tensor, dict, dict] | None = None,
+) -> dict:
+    config.validate()
+    device = resolve_device(config.learned.device)
+    print_environment(device, "Region-zone matching probe")
+    canonical_transition, graph_splits, metadata = (
+        _synthetic_graph_data(config) if graph_data is None else graph_data
+    )
     results: list[dict] = []
     for matcher in config.matchers:
         if matcher in {"learned", "learned_structural"}:
@@ -717,8 +727,8 @@ def run_region_zone_match_probe(config: RegionZoneProbeConfig) -> dict:
         learned_history,
         learned_checkpoint,
         identifiability,
-        bundle.transition_matrix,
-        config.to_dict(),
+        canonical_transition.tolist(),
+        {**config.to_dict(), **({"data_source": metadata} if metadata else {})},
         config.output_dir,
         structural_history=structural_history,
         structural_checkpoint=structural_checkpoint,

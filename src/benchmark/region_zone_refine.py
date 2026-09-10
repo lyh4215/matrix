@@ -33,6 +33,8 @@ def refine_saved_results(
     if not matchers or set(matchers) - {"learned", "learned_structural"}:
         raise ValueError("select learned and/or learned_structural for local search")
     payload = json.loads(source.read_text(encoding="utf-8"))
+    if payload["config"].get("data_source", {}).get("kind") == "korean_corpus":
+        raise ValueError("corpus results cannot be replayed with the synthetic generator; use korean_corpus_benchmark.py")
     config = region_zone_probe_config_from_dict(payload["config"])
     config.output_dir = str(output_dir)
     config.local_search = LocalSearchConfig(**{**asdict(search), "enabled": True})
