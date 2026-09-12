@@ -17,6 +17,7 @@ from ..data.controlled_synthetic import (
     ControlledSyntheticConfig,
     generate_controlled_benchmark,
 )
+from ..models.sequence_region_zone_matcher import SequenceRegionZoneMatcher
 from ..models.region_zone_matcher import (
     LearnedRegionZoneMatcher,
     observed_permutation_nll,
@@ -140,8 +141,8 @@ class RegionZoneProbeConfig:
     compare_oracle: bool = False
 
     def validate(self) -> None:
-        if not self.matchers or set(self.matchers) - set(MATCHERS):
-            raise ValueError(f"matchers must be selected from {MATCHERS}")
+        if not self.matchers or set(self.matchers) - (set(MATCHERS) | {"learned_sequence"}):
+            raise ValueError(f"matchers must be selected from {(*MATCHERS, 'learned_sequence')}")
         if len(self.matchers) != len(set(self.matchers)):
             raise ValueError("matcher names must be unique")
         self.synthetic.validate()
@@ -407,6 +408,14 @@ def _stack_graphs(
     )
 
 
+def _sequence_batch(graphs, device):
+    if any(len(g.anonymous_sequences) != 1 for g in graphs):
+        raise ValueError("learned_sequence currently requires one sequence per graph")
+    return torch.nn.utils.rnn.pad_sequence(
+        [torch.tensor(g.anonymous_sequences[0], dtype=torch.long, device=device) for g in graphs],
+        batch_first=True, padding_value=-1)
+
+
 def _learned_assignments(
     model: LearnedRegionZoneMatcher,
     graphs: Sequence[AnonymousRegionGraph],
@@ -419,7 +428,9 @@ def _learned_assignments(
         for start in range(0, len(graphs), batch_size):
             batch = graphs[start : start + batch_size]
             features, transition, observed, _targets = _stack_graphs(batch, device)
-            if isinstance(model, LearnedStructuralRegionZoneMatcher):
+            if isinstance(model, SequenceRegionZoneMatcher):
+                output = model(_sequence_batch(batch, device))
+            elif isinstance(model, LearnedStructuralRegionZoneMatcher):
                 counts = torch.stack([graph.transition_counts for graph in batch]).to(transition)
                 output = model(features, transition, observed, counts)
             else:
@@ -452,6 +463,8 @@ def _evaluate_learned_graphs(
         if isinstance(model, LearnedStructuralRegionZoneMatcher)
         else "learned"
     )
+    if isinstance(model, SequenceRegionZoneMatcher):
+        matcher = "learned_sequence"
     return _evaluate_graphs(matcher, graphs, predictor, model.num_zones)
 
 
@@ -464,7 +477,7 @@ def _train_learned_matcher(
     matcher: str = "learned",
     canonical_transition: Tensor | None = None,
 ) -> tuple[list[dict], list[dict], str]:
-    if matcher not in {"learned", "learned_structural"}:
+    if matcher not in {"learned", "learned_structural", "learned_sequence"}:
         raise ValueError(f"unsupported learned matcher {matcher!r}")
     if matcher == "learned_structural" and canonical_transition is None:
         raise ValueError("learned_structural requires the canonical transition matrix")
@@ -496,6 +509,8 @@ def _train_learned_matcher(
             structural_beta=config.learned_structural.structural_beta,
             **model_kwargs,
         ).to(device)
+    elif matcher == "learned_sequence":
+        model = SequenceRegionZoneMatcher(**model_kwargs).to(device)
     else:
         model = LearnedRegionZoneMatcher(**model_kwargs).to(device)
     optimizer = torch.optim.AdamW(
@@ -516,7 +531,9 @@ def _train_learned_matcher(
             batch = [train_graphs[index] for index in order[start : start + learned.batch_size]]
             features, transition, observed, targets = _stack_graphs(batch, device)
             optimizer.zero_grad(set_to_none=True)
-            if isinstance(model, LearnedStructuralRegionZoneMatcher):
+            if isinstance(model, SequenceRegionZoneMatcher):
+                output = model(_sequence_batch(batch, device))
+            elif isinstance(model, LearnedStructuralRegionZoneMatcher):
                 counts = torch.stack([graph.transition_counts for graph in batch]).to(transition)
                 output = model(features, transition, observed, counts)
             else:
@@ -572,6 +589,9 @@ def _train_learned_matcher(
     torch.save(
         {
             "model_state": best_state,
+            "matcher": matcher,
+            **({"sequence_config": {"num_heads": 4}} if matcher == "learned_sequence" else {}),
+            "parameter_count": sum(p.numel() for p in model.parameters()),
             "model_config": asdict(config.learned),
             "num_zones": config.synthetic.num_zones,
             "best_epoch": best_epoch,
@@ -634,7 +654,7 @@ def run_region_zone_match_probe(
     )
     results: list[dict] = []
     for matcher in config.matchers:
-        if matcher in {"learned", "learned_structural"}:
+        if matcher in {"learned", "learned_structural", "learned_sequence"}:
             continue
         matcher_results = _run_nonlearned(
             matcher, graph_splits["test"], canonical_transition, config
@@ -663,7 +683,8 @@ def run_region_zone_match_probe(
     learned_checkpoint: str | None = None
     structural_history: list[dict] = []
     structural_checkpoint: str | None = None
-    for matcher in ("learned", "learned_structural"):
+    sequence_history, sequence_checkpoint = [], None
+    for matcher in ("learned", "learned_structural", "learned_sequence"):
         if matcher not in config.matchers:
             continue
         learned_results, history, checkpoint = _train_learned_matcher(
@@ -677,8 +698,10 @@ def run_region_zone_match_probe(
         )
         if matcher == "learned":
             learned_history, learned_checkpoint = history, checkpoint
-        else:
+        elif matcher == "learned_structural":
             structural_history, structural_checkpoint = history, checkpoint
+        else:
+            sequence_history, sequence_checkpoint = history, checkpoint
         results.extend(learned_results)
         for result in learned_results:
             print(
@@ -732,11 +755,14 @@ def run_region_zone_match_probe(
         config.output_dir,
         structural_history=structural_history,
         structural_checkpoint=structural_checkpoint,
+        sequence_history=sequence_history,
+        sequence_checkpoint=sequence_checkpoint,
     )
     return {
         "results": results,
         "learned_history": learned_history,
         "learned_structural_history": structural_history,
+        "learned_sequence_history": sequence_history,
         "identifiability": identifiability,
         "paths": paths,
     }
@@ -777,7 +803,7 @@ def main() -> None:
         description="Probe anonymous cipher-region to semantic-zone permutation recovery"
     )
     parser.add_argument("--config", default="configs/region_zone_match_probe.yaml")
-    parser.add_argument("--matchers", nargs="+", choices=MATCHERS)
+    parser.add_argument("--matchers", nargs="+", choices=(*MATCHERS, "learned_sequence"))
     parser.add_argument("--train-tables", type=int)
     parser.add_argument("--validation-tables", type=int)
     parser.add_argument("--test-tables", type=int)

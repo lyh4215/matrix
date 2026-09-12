@@ -291,6 +291,8 @@ def write_region_zone_results(
     output_dir: str | Path,
     structural_history: Sequence[dict] = (),
     structural_checkpoint: str | None = None,
+    sequence_history: Sequence[dict] = (),
+    sequence_checkpoint: str | None = None,
 ) -> dict[str, str | None]:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -306,6 +308,8 @@ def write_region_zone_results(
             "learned_checkpoint": learned_checkpoint,
             "learned_structural_history": list(structural_history),
             "learned_structural_checkpoint": structural_checkpoint,
+            "learned_sequence_history": list(sequence_history),
+            "learned_sequence_checkpoint": sequence_checkpoint,
         },
     )
     summary_results = [_without_table_results(result) for result in results]
@@ -338,6 +342,9 @@ def write_region_zone_results(
     structural_history_path = output_path / "learned_structural" / "history.json"
     if structural_history:
         _write_json(structural_history_path, list(structural_history))
+    sequence_history_path = output_path / "learned_sequence" / "history.json"
+    if sequence_history:
+        _write_json(sequence_history_path, list(sequence_history))
     _plot_curves(results, output_path)
     return {
         "raw_results": str(raw_path),
@@ -348,5 +355,7 @@ def write_region_zone_results(
         "learned_checkpoint": learned_checkpoint,
         "learned_structural_history": str(structural_history_path) if structural_history else None,
         "learned_structural_checkpoint": structural_checkpoint,
+        "learned_sequence_history": str(sequence_history_path) if sequence_history else None,
+        "learned_sequence_checkpoint": sequence_checkpoint,
         "plots": str(output_path / "plots"),
     }
