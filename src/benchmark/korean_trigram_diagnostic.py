@@ -124,7 +124,7 @@ def candidate_map(results):
 
 def main(max_order=3):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--max-order", type=int, choices=(3, 4, 5), default=max_order)
+    parser.add_argument("--max-order", type=int, choices=(3, 4, 5, 6, 7), default=max_order)
     parser.add_argument("--results", required=True, help="Existing Korean corpus benchmark ZIP")
     parser.add_argument("--cache-dir", default="artifacts/corpus_cache")
     parser.add_argument("--corpus", help="Original local corpus, if the benchmark used one")
@@ -152,7 +152,10 @@ def main(max_order=3):
         raise ValueError("regenerated windows/splits differ from saved provenance")
     if not torch.equal(p, torch.tensor(raw["canonical_transition_matrix"], dtype=torch.float64)):
         raise ValueError("train canonical P differs from saved benchmark")
-    from . import korean_ngram_scoring as ngram
+    if args.max_order >= 6:
+        from . import korean_sparse_ngram_scoring as ngram
+    else:
+        from . import korean_ngram_scoring as ngram
     print(f"Counting train-only n-grams through order {args.max_order}", flush=True)
     all_counts = ngram.fit_ngrams(documents, config.seed, args.max_order)
     counts = all_counts[3]
@@ -188,6 +191,7 @@ def main(max_order=3):
     for setting in settings:
         report = evaluate(validation, candidates, setting)
         validation_results.append({"setting": setting, **report})
+        print(f"Scored validation: {setting}", flush=True)
     chosen = select_setting(validation_results)
     # Selection is finalized before any test candidate scores are computed.
     test_candidates = candidate_map([next(r for r in raw["results"] if r["matcher"] == name)
@@ -199,7 +203,10 @@ def main(max_order=3):
     test_results = []
     # Fixed historical trigram reference is predeclared, never chosen from test.
     trigram_reference = settings.index({"order": 3, "strength": 1.0, "weight": 1.0})
-    for index in dict.fromkeys([0, trigram_reference, chosen]):
+    references = [0, trigram_reference]
+    if args.max_order >= 5:
+        references.append(settings.index({"order": 5, "strength": 100.0, "weight": 1.0}))
+    for index in dict.fromkeys([*references, chosen]):
         setting = settings[index]
         test_results.append({"setting": setting, **evaluate(test, test_candidates, setting)})
     report = {
@@ -208,6 +215,8 @@ def main(max_order=3):
         "selected_setting": settings[chosen], "train_trigram_count": int(counts.sum()),
         "train_ngram_counts": {n: int(c.sum()) for n, c in all_counts.items()},
         "max_order": args.max_order,
+        "count_storage": "sparse" if args.max_order >= 6 else "dense",
+        "observed_patterns": {n: len(c.patterns) for n, c in all_counts.items()} if args.max_order >= 6 else {},
         "validation": validation_results, "test": test_results,
         "limitations": "fixed oracle/structural-local-search candidate pair; truth scored for diagnostics only, never selected; validation reused from neural checkpoint selection; existing test was previously inspected; no n-gram search or new training",
     }
@@ -223,8 +232,8 @@ def main(max_order=3):
             s = r["setting"]
             lines.append(f"| {split} | {s['order']} | {s['strength']} | {s['weight']} | {r['truth_beats_all_wrong']}/{r['tables_with_wrong_candidate']} | {r['assignment_accuracy']:.2%} | {r['token_accuracy']:.2%} |")
     lines += ["", "## Context coverage (validation; weight=1)", "",
-              "| Order | Strength | Sequence source | Unseen history | Unseen n-gram | Lower-order mass |",
-              "|---:|---:|---|---:|---:|---:|"]
+              "| Order | Strength | Sequence source | Unseen history | Unseen n-gram | Lower-order mass | Mass to <=5 |",
+              "|---:|---:|---|---:|---:|---:|---:|"]
     for r in validation_results:
         s = r["setting"]
         if s["weight"] != 1:
@@ -232,7 +241,7 @@ def main(max_order=3):
         for name, levels in r["context_coverage"].items():
             c = levels[s["order"]]
             if c["positions"]:
-                lines.append(f"| {s['order']} | {s['strength']} | {name} | {c['unseen_history_rate']:.2%} | {c['unseen_ngram_rate']:.2%} | {c['mean_lower_order_mass']:.2%} |")
+                lines.append(f"| {s['order']} | {s['strength']} | {name} | {c['unseen_history_rate']:.2%} | {c['unseen_ngram_rate']:.2%} | {c['mean_lower_order_mass']:.2%} | {c.get('mean_mass_to_order_5_or_lower', 1.0):.2%} |")
     lines += ["", report["limitations"]]
     (output / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines), flush=True)
