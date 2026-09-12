@@ -30,7 +30,7 @@ NLL = -log P[z1|z0] - sum(t=2..L-1) log M[zt|z(t-2),z(t-1)]
 - 고정 grid: bigram baseline (`w=0`), `k ∈ {1,10,100}` × `w ∈ {0.25,0.5,0.75,1}`.
 - validation: 기존 structural checkpoint로 추론 후 기존 bigram local search를 적용하고, oracle도 생성한다. 두 후보를 모든 점수 설정에서 동일하게 사용한다.
 - 선택 기준: validation에서 **모든 오답 후보보다 정답 NLL이 엄격히 낮은 구간 비율** 최대. 동률이면 validation 후보 선택 token accuracy가 높은 설정, 그래도 같으면 grid에서 먼저 나온 설정을 사용한다.
-- test: 선택을 확정한 후 **bigram baseline과 선택된 설정만** 평가한다. ZIP에 저장된 oracle/structural-local-search 후보를 사용한다. 정답은 후보로 추가하지 않는다. 후보 NLL 동률은 oracle을 선택한다.
+- test: 선택을 확정한 후 **bigram baseline, 고정 trigram 기준(k=1, w=1), 선택된 설정**을 평가한다(중복 제외). ZIP에 저장된 oracle/structural-local-search 후보를 사용한다. 정답은 후보로 추가하지 않는다. 후보 NLL 동률은 oracle을 선택한다.
 
 관측된 region에서 정답인 후보는 오답 집합에서 제외한다. 오답 후보가 하나도 없는 구간은 truth-win 비율의 분모에서 제외한다. NLL 차이의 절댓값이 `1e-8` 이하이면 진단상 동률로 집계한다.
 

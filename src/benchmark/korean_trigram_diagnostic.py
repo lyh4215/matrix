@@ -1,4 +1,4 @@
-"""Train-only trigram scoring of fixed candidates; no neural training or trigram search."""
+"""Train-only n-gram scoring of fixed candidates; no neural training or n-gram search."""
 from __future__ import annotations
 
 import argparse
@@ -62,20 +62,20 @@ def sequence_nll(sequence, assignment, bigram, trigram, weight: float) -> float:
     return float(score)
 
 
-def diagnose(graphs, candidates, bigram, trigrams, weight):
+def diagnose(graphs, candidates, bigram, trigrams, weight, scorer=sequence_nll):
     """Truth is scored separately and never enters candidate selection."""
     rows = []
     for graph in graphs:
         predictions = candidates[graph.table_id]
         assignments = [x["predicted_assignment"] for x in predictions]
-        scores = [sum(sequence_nll(s, a, bigram, trigrams, weight)
+        scores = [sum(scorer(s, a, bigram, trigrams, weight)
                       for s in graph.anonymous_sequences) for a in assignments]
         winner = min(range(len(scores)), key=scores.__getitem__)  # exact ties retain oracle
         truth = graph.true_zone_by_anonymous_region
         observed = graph.observed_mask
         wrong = [i for i, a in enumerate(assignments)
                  if not torch.equal(torch.tensor(a)[observed], truth[observed])]
-        true_score = sum(sequence_nll(s, truth, bigram, trigrams, weight)
+        true_score = sum(scorer(s, truth, bigram, trigrams, weight)
                          for s in graph.anonymous_sequences)
         gap = min((scores[i] - true_score for i in wrong), default=None)
         predicted = torch.tensor(assignments[winner])
@@ -122,12 +122,13 @@ def candidate_map(results):
     return mapped
 
 
-def main():
+def main(max_order=3):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--max-order", type=int, choices=(3, 4, 5), default=max_order)
     parser.add_argument("--results", required=True, help="Existing Korean corpus benchmark ZIP")
     parser.add_argument("--cache-dir", default="artifacts/corpus_cache")
     parser.add_argument("--corpus", help="Original local corpus, if the benchmark used one")
-    parser.add_argument("--output-dir", default="artifacts/korean_trigram_diagnostic")
+    parser.add_argument("--output-dir", default="artifacts/korean_ngram_diagnostic" if max_order > 3 else "artifacts/korean_trigram_diagnostic")
     parser.add_argument("--smoke", action="store_true", help="Only two validation/test tables and reduced oracle search; not a final experiment")
     args = parser.parse_args()
     torch.set_num_threads(1)
@@ -151,7 +152,10 @@ def main():
         raise ValueError("regenerated windows/splits differ from saved provenance")
     if not torch.equal(p, torch.tensor(raw["canonical_transition_matrix"], dtype=torch.float64)):
         raise ValueError("train canonical P differs from saved benchmark")
-    counts = fit_trigrams(documents, config.seed)
+    from . import korean_ngram_scoring as ngram
+    print(f"Counting train-only n-grams through order {args.max_order}", flush=True)
+    all_counts = ngram.fit_ngrams(documents, config.seed, args.max_order)
+    counts = all_counts[3]
     learned = checkpoint["model_config"]
     kwargs = {k: learned[k] for k in ("d_model", "num_layers", "dropout", "sinkhorn_iterations", "sinkhorn_temperature")}
     structural = checkpoint["structural_config"]
@@ -170,11 +174,19 @@ def main():
     neural = _evaluate_learned_graphs(model, validation, learned["batch_size"], torch.device("cpu"))
     refined = evaluate_local_search(neural, validation, p, config.local_search, config.seed)
     candidates = candidate_map([oracle, refined])
-    settings = [{"strength": 1.0, "weight": 0.0}] + [
-        {"strength": k, "weight": w} for k in (1.0, 10.0, 100.0) for w in (0.25, 0.5, 0.75, 1.0)]
+    settings = [{"order": 2, "strength": 1.0, "weight": 0.0}] + [
+        {"order": n, "strength": k, "weight": w} for n in range(3, args.max_order + 1)
+        for k in (1.0, 10.0, 100.0) for w in (0.25, 0.5, 0.75, 1.0)]
+    def evaluate(graphs, fixed_candidates, setting):
+        levels = ngram.probabilities(all_counts, p, setting["strength"], setting["order"])
+        result = diagnose(graphs, fixed_candidates, p, levels, setting["weight"], ngram.sequence_nll)
+        result["context_coverage"] = ngram.context_coverage(
+            graphs, fixed_candidates, all_counts, setting["order"], setting["strength"])
+        return result
+
     validation_results = []
     for setting in settings:
-        report = diagnose(validation, candidates, p, trigram_probabilities(counts, p, setting["strength"]), setting["weight"])
+        report = evaluate(validation, candidates, setting)
         validation_results.append({"setting": setting, **report})
     chosen = select_setting(validation_results)
     # Selection is finalized before any test candidate scores are computed.
@@ -185,28 +197,42 @@ def main():
             if row["true_assignment"] != graph.true_zone_by_anonymous_region.tolist():
                 raise ValueError("saved test assignments differ from reconstructed graphs")
     test_results = []
-    for index in dict.fromkeys([0, chosen]):
+    # Fixed historical trigram reference is predeclared, never chosen from test.
+    trigram_reference = settings.index({"order": 3, "strength": 1.0, "weight": 1.0})
+    for index in dict.fromkeys([0, trigram_reference, chosen]):
         setting = settings[index]
-        test_results.append({"setting": setting, **diagnose(test, test_candidates, p,
-            trigram_probabilities(counts, p, setting["strength"]), setting["weight"])})
+        test_results.append({"setting": setting, **evaluate(test, test_candidates, setting)})
     report = {
         "source_zip": str(Path(args.results).resolve()), "corpus_source": source, "smoke": args.smoke,
         "selection_rule": "validation truth_win_rate, then validation token_accuracy; stable ties favor earlier setting",
         "selected_setting": settings[chosen], "train_trigram_count": int(counts.sum()),
+        "train_ngram_counts": {n: int(c.sum()) for n, c in all_counts.items()},
+        "max_order": args.max_order,
         "validation": validation_results, "test": test_results,
-        "limitations": "fixed oracle/structural-local-search candidate pair; truth scored for diagnostics only, never selected; validation reused from neural checkpoint selection; existing test was previously inspected; no trigram search or new training",
+        "limitations": "fixed oracle/structural-local-search candidate pair; truth scored for diagnostics only, never selected; validation reused from neural checkpoint selection; existing test was previously inspected; no n-gram search or new training",
     }
     output = Path(args.output_dir) / datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f_UTC")
     output.mkdir(parents=True, exist_ok=False)
     (output / "diagnostic.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     (output / "validation_candidates.json").write_text(json.dumps(candidates, ensure_ascii=False), encoding="utf-8")
-    lines = ["# Korean trigram diagnostic", "", f"Smoke: {args.smoke}", f"Selected: {settings[chosen]}", "",
+    lines = ["# Korean n-gram diagnostic", "", f"Smoke: {args.smoke}", f"Selected: {settings[chosen]}", "",
              "Truth win = true NLL strictly below every wrong candidate (observed assignment); excludes tables with no wrong candidates.", "",
-             "| Split | Strength | Trigram weight | Truth wins / eligible | Assignment | Token |", "|---|---:|---:|---:|---:|---:|"]
+             "| Split | Order | Strength | Weight | Truth wins / eligible | Assignment | Token |", "|---|---:|---:|---:|---:|---:|---:|"]
     for split, results in (("validation", validation_results), ("test", test_results)):
         for r in results:
             s = r["setting"]
-            lines.append(f"| {split} | {s['strength']} | {s['weight']} | {r['truth_beats_all_wrong']}/{r['tables_with_wrong_candidate']} | {r['assignment_accuracy']:.2%} | {r['token_accuracy']:.2%} |")
+            lines.append(f"| {split} | {s['order']} | {s['strength']} | {s['weight']} | {r['truth_beats_all_wrong']}/{r['tables_with_wrong_candidate']} | {r['assignment_accuracy']:.2%} | {r['token_accuracy']:.2%} |")
+    lines += ["", "## Context coverage (validation; weight=1)", "",
+              "| Order | Strength | Sequence source | Unseen history | Unseen n-gram | Lower-order mass |",
+              "|---:|---:|---|---:|---:|---:|"]
+    for r in validation_results:
+        s = r["setting"]
+        if s["weight"] != 1:
+            continue
+        for name, levels in r["context_coverage"].items():
+            c = levels[s["order"]]
+            if c["positions"]:
+                lines.append(f"| {s['order']} | {s['strength']} | {name} | {c['unseen_history_rate']:.2%} | {c['unseen_ngram_rate']:.2%} | {c['mean_lower_order_mass']:.2%} |")
     lines += ["", report["limitations"]]
     (output / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines), flush=True)
